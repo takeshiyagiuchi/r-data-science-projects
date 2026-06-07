@@ -1,0 +1,1427 @@
+---
+title: "DATA*6200 F25 Assignment2"
+author: "Takeshi Yagiuchi"
+toc: true
+number-sections: true
+format: 
+  html:
+    df-print: paged
+    embed-resources: true
+    code-background: true
+css: styles.css
+editor: visual
+---
+
+# Introduction
+In this assignment, we analyze British Columbia wildfire incident data from 2012 to 2024. Our primary dataset is derived from KMZ files published by the BC Wildfire Service, and we supplement it with wildfire summary tables scraped from the BC Wildfire website for comparison and validation. After cleaning, consolidating, and parsing the KMZ records, we investigate major wildfire trends across years and explore the relationship between wildfire characteristics and causes.
+
+<br>
+
+# Preparation
+
+Before working with the data, we first install and load the necessary R packages for this project:
+
+```{r}
+#| message: false
+#| warning: false
+#| error: false
+
+library(sf)
+library(tidyverse)
+library(httr)
+library(xml2)
+library(rvest)
+library(tmap)
+library(leaflet)
+library(bcmaps)  # This has been approved by professor
+library(patchwork)
+```
+
+<br>
+
+# Get and Inspect BC Wildfire Data (Files)
+## Download & Read KMZ Files
+
+The files used in this assignment are available at the following resource: [the wildfire KMZ datasets published by the British Columbia government](https://www.for.gov.bc.ca/ftp/HPR/external/!publish/Maps_and_Data/GoogleEarth/WMB_Fires/). We include both the main and archived files, since the primary set does not cover all target years, particularly 2012 and 2023. The specific files we use are listed below:
+
+```{r}
+#| message: false
+#| warning: false
+#| error: false
+#| echo: false
+#| classes: styled-output
+
+data_source = "Data Source: British Columbia - Statistics & Geospatial Data (https://www2.gov.bc.ca/gov/content/safety/wildfire-status/about-bcws/wildfire-statistics)"
+
+# List out all the file links
+url_list <- list(
+  "https://www.for.gov.bc.ca/ftp/HPR/external/!publish/Maps_and_Data/GoogleEarth/WMB_Fires/Archive/BC%20Fire%20Points%202010-2012.kmz", 
+  "https://www.for.gov.bc.ca/ftp/HPR/external/!publish/Maps_and_Data/GoogleEarth/WMB_Fires/Archive/BC%20Fire%20Points%202011-2013.kmz", 
+  "https://www.for.gov.bc.ca/ftp/HPR/external/!publish/Maps_and_Data/GoogleEarth/WMB_Fires/Archive/BC%20Fire%20Points%202012-2014.kmz", 
+  "https://www.for.gov.bc.ca/ftp/HPR/external/!publish/Maps_and_Data/GoogleEarth/WMB_Fires/Archive/BC%20Fire%20Points%202013-2015.kmz", 
+  "https://www.for.gov.bc.ca/ftp/HPR/external/!publish/Maps_and_Data/GoogleEarth/WMB_Fires/Archive/BC%20Fire%20Points%202014-2016.kmz", 
+  "https://www.for.gov.bc.ca/ftp/HPR/external/!publish/Maps_and_Data/GoogleEarth/WMB_Fires/Archive/BC%20Fire%20Points%202016-2018.kmz", 
+  "https://www.for.gov.bc.ca/ftp/HPR/external/!publish/Maps_and_Data/GoogleEarth/WMB_Fires/Archive/BC%20Fire%20Points%202023.kmz", 
+  "https://www.for.gov.bc.ca/ftp/HPR/external/!publish/Maps_and_Data/GoogleEarth/WMB_Fires/BC%20Fire%20Points%202013-2015.kmz", 
+  "https://www.for.gov.bc.ca/ftp/HPR/external/!publish/Maps_and_Data/GoogleEarth/WMB_Fires/BC%20Fire%20Points%202015-2017.kmz", 
+  "https://www.for.gov.bc.ca/ftp/HPR/external/!publish/Maps_and_Data/GoogleEarth/WMB_Fires/BC%20Fire%20Points%202017-2019.kmz", 
+  "https://www.for.gov.bc.ca/ftp/HPR/external/!publish/Maps_and_Data/GoogleEarth/WMB_Fires/BC%20Fire%20Points%202018-2020.kmz", 
+  "https://www.for.gov.bc.ca/ftp/HPR/external/!publish/Maps_and_Data/GoogleEarth/WMB_Fires/BC%20Fire%20Points%202019-2021.kmz", 
+  "https://www.for.gov.bc.ca/ftp/HPR/external/!publish/Maps_and_Data/GoogleEarth/WMB_Fires/BC%20Fire%20Points%202020-2022.kmz", 
+  "https://www.for.gov.bc.ca/ftp/HPR/external/!publish/Maps_and_Data/GoogleEarth/WMB_Fires/BC%20Fire%20Points%202021-2023.kmz", 
+  "https://www.for.gov.bc.ca/ftp/HPR/external/!publish/Maps_and_Data/GoogleEarth/WMB_Fires/BC%20Fire%20Points%202024.kmz"
+)
+
+for (url in url_list) {
+  cat(paste0(url, "\n"))
+}
+```
+
+```{r}
+#| include: false
+# Remove unnecessary objects from environment
+rm(url)
+```
+
+We read all files as sf objects. Because each KMZ file contains multiple layers by year, an sf object is created for each year layer:
+
+```{r}
+#| message: false
+#| warning: false
+#| error: false
+#| code-fold: true
+#| output: false
+
+# Create a directory to download kmz files in
+kmz_dir = "kmz/"
+if (!dir.exists(kmz_dir)) {
+  dir.create(kmz_dir)
+}
+
+# Read each KMZ file
+kmz_list <- list()
+wfbc_all_sf_nlist <- list()
+for (url in url_list) {
+  # Define kmz output paths
+  kmz_dirpath <- paste0(
+    "kmz/",
+    gsub(
+      ".kmz", 
+      "", 
+      gsub(
+        "%20", "_", substring(url, tail(unlist(gregexpr("/", url)) + 1, n = 1))
+      )
+    )
+  )
+  print(kmz_dirpath)
+  kmz_filepath <- paste0(last(kmz_list), ".kmz")
+  kmz_list[[length(kmz_list) + 1]] <- kmz_dirpath
+  # Download the kmz file
+  download.file(
+    url = url, 
+    destfile = kmz_filepath
+  )
+  # Unzip the kmz file
+  if (!dir.exists(last(kmz_list))) {
+    dir.create(last(kmz_list))
+  }
+  unzip(kmz_filepath, exdir = last(kmz_list))
+  # Read each KMZ file layer as an sf object
+  doc_path <- paste0(kmz_dirpath, "/doc.kml")
+  for (layer_name in st_layers(doc_path)$name) {
+    layer_name_mod <- trimws(layer_name, which = "right")
+    year <- substring(
+      layer_name_mod, 
+      tail(unlist(gregexpr(" ", layer_name_mod)) + 1, n = 1)
+    )
+    wfbc_all_sf_nlist[[paste0(kmz_dirpath, "/", year)]] <- st_read(
+      dsn = doc_path, 
+      layer = layer_name
+    )
+  }
+}
+```
+
+```{r}
+#| include: false
+# Remove unnecessary objects from environment
+rm(doc_path, kmz_dir, kmz_dirpath, kmz_filepath, layer_name, layer_name_mod, name, url, year)
+```
+
+```{r}
+#| message: false
+#| warning: false
+#| error: false
+#| echo: false
+#| classes: styled-output
+
+# Print all the sf object names
+for (name in names(wfbc_all_sf_nlist)) {
+  cat(paste0(name, "\n"))
+}
+```
+
+```{r}
+#| include: false
+# Remove unnecessary objects from environment
+rm(name)
+```
+
+<br>
+
+## Inspect Description
+
+Each sf object contains three columns: **Name**, **Description**, and **geometry**. Most of the meaningful information is stored inside the **Description** field. (Shown below as a dataframe for interpretability.)
+
+```{r}
+#| message: false
+#| warning: false
+#| error: false
+#| echo: false
+
+wfbc_all_sf_nlist["kmz/BC_Fire_Points_2010-2012/2012"] |> 
+  as.data.frame() |>
+  head(1)
+```
+
+<br>
+
+The Description content has an XML structure. It includes key information such as **year**, **fire number**, **latitude**, **longitude**, **fire size** and **cause**, and may include additional attributes depending on the year. Here, we check whether the year in each Description matches the year of its file layer. We count how many Description entries contain the expected year relative to the total:
+
+```{r}
+#| message: false
+#| warning: false
+#| error: false
+#| code-fold: true
+#| classes: styled-output
+
+for (name in names(wfbc_all_sf_nlist)) {
+  # Extract years
+  year <- substring(name, tail(unlist(gregexpr("/", name)) + 1, n = 1))
+  # Check Description
+  tmp_sf <- wfbc_all_sf_nlist[[name]] |> 
+    filter(grepl(paste0("<td>", year, "</td>"), Description))
+  paste0(
+    strrep(" ", 4 - nchar(as.character(nrow(tmp_sf)))), 
+    nrow(tmp_sf), 
+    "/", 
+    strrep(" ", 4 - nchar(as.character(nrow(wfbc_all_sf_nlist[[name]])))), 
+    nrow(wfbc_all_sf_nlist[[name]]), 
+    "  ", 
+    name, 
+    "\n"
+  ) |> cat()
+}
+```
+
+```{r}
+#| include: false
+# Remove unnecessary objects from environment
+rm(tmp_sf, name, year)
+```
+
+<br>
+
+The result reveals an all-or-nothing situation. For example, in *kmz/BC_Fire_Points_2023/2023*, every Description entry is empty. Therefore, we need to inspect Description emptiness by KMZ year layer:
+
+```{r}
+#| message: false
+#| warning: false
+#| error: false
+#| echo: false
+
+wfbc_all_sf_nlist["kmz/BC_Fire_Points_2023/2023"] |> 
+  as.data.frame() |>
+  head(1)
+```
+
+<br>
+
+## Find Empty Descripton
+We now count empty Description entries per KMZ year layer:
+
+```{r}
+#| message: false
+#| warning: false
+#| error: false
+#| code-fold: true
+#| classes: styled-output
+
+for (name in names(wfbc_all_sf_nlist)) {
+  nrow_nonempty <- wfbc_all_sf_nlist[[name]] |> 
+    filter(nchar(Description) > 0) |> 
+    nrow()
+
+  paste0(
+    strrep(" ", 4 - nchar(as.character(nrow_nonempty))), 
+    nrow_nonempty, 
+    "/", 
+    strrep(" ", 4 - nchar(as.character(nrow(wfbc_all_sf_nlist[[name]])))), 
+    nrow(wfbc_all_sf_nlist[[name]]), 
+    "  ", 
+    name, 
+    "\n"
+  ) |> cat()
+}
+```
+
+The result mirrors the year-matching result: if a layer is missing one Description value, it is missing all of them. Because these layers provide almost no usable information, they should be excluded from our analysis.
+
+<br>
+
+## Observe the same year datum from different files.
+
+Before excluding layers with empty Description, we compare duplicate KMZ layers representing the same year. For example, both *kmz/BC_Fire_Points_2013-2015/2015* and *kmz/BC_Fire_Points_2015-2017/2015* contain wildfire data for 2015, but with different record counts. Let’s examine the difference:
+
+```{r}
+#| message: false
+#| warning: false
+#| error: false
+#| code-fold: true
+#| classes: styled-output
+
+wfbc_2015_sf <- bind_rows(
+  list(
+    wfbc_all_sf_nlist[["kmz/BC_Fire_Points_2013-2015/2015"]] |> 
+      mutate(org = "2013-2015"), 
+    wfbc_all_sf_nlist[["kmz/BC_Fire_Points_2015-2017/2015"]] |> 
+      mutate(org = "2015-2017")
+  )
+)
+# wfbc_2015_sf |> nrow()
+wfbc_2015_unique_sf <- wfbc_2015_sf[
+  !(
+    duplicated(wfbc_2015_sf$Name) | 
+    duplicated(wfbc_2015_sf$Name, fromLast = TRUE)
+  ), 
+]
+wfbc_2015_unique_sf |> as.data.frame()
+```
+
+<br>
+
+The difference consists of only one record, matching the record count discrepancy. This record was removed in *kmz/BC_Fire_Points_2015-2017/2015*, but we cannot determine a specific reason. In general, multiple versions of the same year differ only slightly.
+
+<br>
+
+## Select Target Data
+
+Given multiple KMZ layers for some years, we now choose which ones to use. Ideally, we would rely on the non-archived (main) dataset. However, 2012 and 2023 are missing from the main page, so archived files must be used. After reviewing, 2012, 2015, and 2023 still have multiple KMZ year layers. Since differences between these datasets are small, we choose the newest version under the assumption of updates. Even so, 2023 still has empty Description values.
+
+Final selection rules:
+
+1.	Prefer non-archived files.
+2.	Exclude layers with empty Description.
+3.	Prefer the newest version of a year.
+4.	For years not available otherwise, use archived or empty-Description files.
+
+<center>
+![Target KMZ year layers](DATA6200-F25-Assignment2-pic01.png)
+</center>
+
+```{r}
+#| message: false
+#| warning: false
+#| error: false
+#| code-fold: true
+#| classes: styled-output
+
+target_data_list <- list(
+  "kmz/BC_Fire_Points_2012-2014/2012", 
+  "kmz/BC_Fire_Points_2013-2015/2013", 
+  "kmz/BC_Fire_Points_2013-2015/2014", 
+  "kmz/BC_Fire_Points_2015-2017/2015", 
+  "kmz/BC_Fire_Points_2015-2017/2016", 
+  "kmz/BC_Fire_Points_2017-2019/2017", 
+  "kmz/BC_Fire_Points_2017-2019/2018", 
+  "kmz/BC_Fire_Points_2017-2019/2019", 
+  "kmz/BC_Fire_Points_2020-2022/2020", 
+  "kmz/BC_Fire_Points_2020-2022/2021", 
+  "kmz/BC_Fire_Points_2020-2022/2022", 
+  "kmz/BC_Fire_Points_2021-2023/2023", 
+  "kmz/BC_Fire_Points_2024/2024"
+)
+
+wfbc_target_sf_nlist <- list()
+desc_sample_by_year_nlist <- list()
+for (name in target_data_list) {
+  cat(paste0(name, "\n"))
+  year <- substring(name, tail(unlist(gregexpr("/", name)) + 1, n = 1))
+  tmp_sf <- wfbc_all_sf_nlist[[name]] |> mutate(Year = year)
+  tmp_sf <- tmp_sf[, c("Year", "Name", "Description", "geometry")]
+  wfbc_target_sf_nlist[[name]] <- tmp_sf
+  desc_sample_by_year_nlist[[name]] <- 
+    slice(wfbc_all_sf_nlist[[name]], 1)$Description
+}
+```
+
+```{r}
+#| include: false
+# Remove unnecessary objects from environment
+rm(name, tmp_sf, year)
+```
+
+<br>
+
+## Check Description Format
+
+Now that we have selected one dataset per year, we inspect the structure of Description to extract required properties. Each year uses slightly different tag names. We assume all records within a given year share the same XML structure, so we inspect one sample record per year:
+
+```{r}
+#| message: false
+#| warning: false
+#| error: false
+#| code-fold: true
+#| classes: styled-output
+
+for (name in names(desc_sample_by_year_nlist)) {
+  if (name == "kmz/BC_Fire_Points_2021-2023/2023") {
+    cat("empty description (2023)\n\n")
+    next
+  }
+  desc_columns_list <- desc_sample_by_year_nlist[[name]] |> 
+    minimal_html() |>
+    xml_find_all("//table") |> 
+    xml_child(search = 2) |> 
+    xml_find_all(".//tr")
+  
+  wfbc_desc_nlist <- list()
+  for (i in desc_columns_list) {
+    parsed_list <- i |> xml_find_all(".//td") |> xml_text()
+    wfbc_desc_nlist[parsed_list[1]] <- parsed_list[2]
+  }
+
+  for (i in names(wfbc_desc_nlist)) {
+    paste0(i, ": ", wfbc_desc_nlist[i]) |> print()
+  }
+  cat("\n")
+}
+```
+
+```{r}
+#| include: false
+# Remove unnecessary objects from environment
+rm(desc_columns_list, i, name, parsed_list, wfbc_desc_nlist)
+```
+
+<br>
+
+The available properties differ across years, more recent years contain more details. For this assignment, we only need **year**, **fire number**, **latitude**, **longitude**, **fire size** and **cause**. Because tag names vary, we standardize them as follows:
+
+-   "FIREYEAR", "YEAR" -\> "FIRE_YEAR"
+-   "FIRENUBER", "Fire Number" -\> "FIRE NUMBER"
+-   "CURRENT SIZE", "FIRE_SIZE_HA" -\> "CURRENT_SIZE"
+-   "CAUSE_GENERAL_KMZ", "CAUSE GENERAL" -\> "CAUSE_GENERAL"
+
+Before unifying names, we first bind all KMZ year-layer sf objects into a single object.
+
+<br>
+
+## Bind sf Objects
+
+Here, we combine all the KMZ year layers into one sf object:
+
+```{r}
+#| message: false
+#| warning: false
+#| error: false
+
+wfbc_target_sf <- bind_rows(unname(wfbc_target_sf_nlist))
+```
+
+```{r}
+#| message: false
+#| warning: false
+#| error: false
+#| echo: false
+#| classes: styled-output
+
+cat(paste0("the number of rows: ", nrow(wfbc_target_sf)))
+```
+
+```{r}
+#| include: false
+# Remove unnecessary objects from environment
+rm(wfbc_target_sf_nlist)
+```
+
+<br>
+
+## Parse Description
+
+We now parse Description to extract and clean wildfire information. First, we apply the unified property names. Then, we convert data types appropriately for analysis:
+
+```{r}
+#| message: false
+#| warning: false
+#| error: false
+#| code-fold: true
+#| classes: styled-output
+
+# Unify the property names of wildfire
+wfbc_target_sf$Desc_mod <- wfbc_target_sf$Description
+wfbc_target_sf$Desc_mod <- sub(
+  "<td>FIRENUMBER</td>", "<td>FIRE_NUMBER</td>", wfbc_target_sf$Desc_mod
+)
+wfbc_target_sf$Desc_mod <- sub(
+  "<td>Fire Number</td>", "<td>FIRE_NUMBER</td>", wfbc_target_sf$Desc_mod
+)
+wfbc_target_sf$Desc_mod <- sub(
+  "<td>CURRENTSIZE</td>", "<td>CURRENT_SIZE</td>", wfbc_target_sf$Desc_mod
+)
+wfbc_target_sf$Desc_mod <- sub(
+  "<td>FIRE_SIZE_HA</td>", "<td>CURRENT_SIZE</td>", wfbc_target_sf$Desc_mod
+)
+wfbc_target_sf$Desc_mod <- sub(
+  "<td>CAUSE_GENERAL_KMZ</td>", "<td>CAUSE_GENERAL</td>", wfbc_target_sf$Desc_mod
+)
+wfbc_target_sf$Desc_mod <- sub(
+  "<td>CAUSE GENERAL</td>", "<td>CAUSE_GENERAL</td>", wfbc_target_sf$Desc_mod
+)
+
+# The function to parse Description
+parse_description <- function(row){
+  wfbc_desc_nlist <- list()
+  if ( wfbc_target_sf$Year[row] != "2023" ) {
+    wfbc_desc_columns_list <- wfbc_target_sf$Desc_mod[row] |> 
+      read_html() |>
+      xml_find_all("//table") |> 
+      xml_child(search = 2) |> 
+      xml_find_all(".//tr")
+    
+    for (i in wfbc_desc_columns_list) {
+      parsed_list <- i |> xml_find_all(".//td") |> xml_text()
+      wfbc_desc_nlist[[parsed_list[1]]] <- parsed_list[2]
+    }
+  }
+  return(
+    data.frame(
+      year = wfbc_target_sf$Year[row], 
+      number = ifelse(
+        is.null(wfbc_desc_nlist[["FIRE_NUMBER"]]), NA, wfbc_desc_nlist[["FIRE_NUMBER"]]
+      ), 
+      latitude = ifelse(
+        is.null(wfbc_desc_nlist[["LATITUDE"]]), NA, wfbc_desc_nlist[["LATITUDE"]]
+      ), 
+      longitude = ifelse(
+        is.null(wfbc_desc_nlist[["LONGITUDE"]]), NA, wfbc_desc_nlist[["LONGITUDE"]]
+      ), 
+      size_ha = ifelse(
+        is.null(wfbc_desc_nlist[["CURRENT_SIZE"]]), NA, wfbc_desc_nlist[["CURRENT_SIZE"]]
+      ), 
+      cause = ifelse(
+        is.null(wfbc_desc_nlist[["CAUSE_GENERAL"]]), 
+        NA, 
+        wfbc_desc_nlist[["CAUSE_GENERAL"]]
+      ), 
+      geometry = wfbc_target_sf$geometry[row]
+    )
+  )
+}
+
+# Apply the parsing function to all the rows of the sf object (Produce a dataframe)
+wfbc_parsed_sf <- map_dfr(1:nrow(wfbc_target_sf), parse_description)
+
+# Convert the dataframe to an sf object
+wfbc_parsed_sf <- st_as_sf(wfbc_parsed_sf)
+# print(st_crs(wfbc_parsed_sf))
+
+# Change the data types of some columns into numeric
+wfbc_parsed_sf$year <- as.numeric(wfbc_parsed_sf$year)
+wfbc_parsed_sf$latitude <- as.numeric(wfbc_parsed_sf$latitude)
+wfbc_parsed_sf$longitude <- as.numeric(wfbc_parsed_sf$longitude)
+wfbc_parsed_sf$size_ha <- as.numeric(wfbc_parsed_sf$size_ha)
+
+wfbc_parsed_sf |> head(1)
+```
+
+<br>
+
+## Check Duplicate
+
+Before performing further analysis, we check for duplicate records within the combined sf object:
+
+```{r}
+#| message: false
+#| warning: false
+#| error: false
+#| code-fold: true
+#| classes: styled-output
+
+duplicated_rows <- filter(wfbc_parsed_sf, year != "2023")[
+  duplicated(
+    filter(wfbc_parsed_sf, year != "2023")[, c("year", "number")]
+  ), 
+]
+
+cat(paste0("The number of duplicate rows: ", nrow(duplicated_rows)))
+```
+
+<br>
+
+## Check NULL
+
+We also evaluate missing values. First, we check whether **year**, **number**, **latitude**, **longitude** or **geometry** contain any NULL entries:
+
+```{r}
+#| message: false
+#| warning: false
+#| error: false
+#| code-fold: true
+#| classes: styled-output
+
+wfbc_incomp_sf <- wfbc_parsed_sf |>
+  filter(
+    is.na(year) |
+    is.na(number) |
+    is.na(latitude) |
+    is.na(longitude) |
+    is.na(geometry)
+  )
+
+wfbc_incomp_sf |> 
+  group_by(year) |> 
+  summarise(count = n())
+```
+No records have missing values in **year**, **number**, **latitude**, **longitude** and **geometry**, except for 2023, which contains only geometry information.
+
+<br>
+
+Next, we check missing values in **cause**:
+
+```{r}
+#| message: false
+#| warning: false
+#| error: false
+#| code-fold: true
+#| classes: styled-output
+
+wfbc_null_cause_sf <- wfbc_parsed_sf |> 
+  filter(
+    is.na(cause)
+  )
+
+wfbc_null_cause_sf |> 
+  group_by(year) |> 
+  summarise(count = n())
+```
+
+Although cause is fully recorded from 2012 to 2016, it is missing for all records from 2017 onward.
+
+<br>
+
+Lastly, we inspect NULLs in **fire size**:
+
+```{r}
+#| message: false
+#| warning: false
+#| error: false
+#| code-fold: true
+#| classes: styled-output
+
+wfbc_null_size_sf <- wfbc_parsed_sf |> 
+  filter(
+    is.na(size_ha)
+  )
+
+wfbc_null_size_sf |> 
+  group_by(year) |> 
+  summarise(count = n())
+```
+
+There are some missing fire size values between 2017 and 2019, but the number is small. We can exclude them later when analyzing fire size distributions if necessary.
+
+<br>
+
+At this point, we have produced a cleaned British Columbia wildfire dataset from the KMZ files. In the next chapter, we will scrape the table data available on the BC Wildfire website to compare it with the dataset we obtained.
+
+<br>
+
+# Scrape BC Wildfire Data on WEB
+## Scrape Data
+
+The same BC Wildfire website that hosts the KMZ files also provides a table of major wildfire incidents (over 5 hectares) from 2012 to 2017. We want to compare this table with the KMZ-based dataset. First, we scrape the table data.
+
+```{r}
+#| message: false
+#| warning: false
+#| error: false
+#| output: false
+
+wfbc_html <- read_html(
+  "https://www2.gov.bc.ca/gov/content/safety/wildfire-status/about-bcws/wildfire-statistics"
+  )
+```
+
+```{r}
+#| message: false
+#| warning: false
+#| error: false
+#| code-fold: true
+
+wfbc_1217_tb <- wfbc_html |> 
+  html_element("table") |> 
+  html_table() |> 
+  arrange(Year, `Fire Number`)
+
+wfbc_1217_tb
+```
+
+<br>
+
+## Modify Columns
+
+The scraped table contains two issues that need correction before comparison.
+First, values in the **Fire Number** column include both numbers and embedded year information, so we must extract the numeric fire number and verify that the year inside the number matches the Year column.
+Second, **Latitude** and **Longitude** are stored as character strings and must be converted to numeric format.
+
+```{r}
+#| message: false
+#| warning: false
+#| error: false
+#| code-fold: true
+#| classes: styled-output
+
+# Modify the Latitude column
+wfbc_1217_tb$Latitude <- gsub("\\.", "", wfbc_1217_tb$Latitude)
+wfbc_1217_tb$Latitude <- gsub(" ", ".", wfbc_1217_tb$Latitude)
+wfbc_1217_tb$Latitude <- as.numeric(wfbc_1217_tb$Latitude)
+
+# Modify the Longitude column
+wfbc_1217_tb$Longitude <- gsub("\\.", "", wfbc_1217_tb$Longitude)
+wfbc_1217_tb$Longitude <- gsub(" ", ".", wfbc_1217_tb$Longitude)
+wfbc_1217_tb$Longitude <- as.numeric(wfbc_1217_tb$Longitude)
+wfbc_1217_tb$Longitude <- wfbc_1217_tb$Longitude * (-1)
+
+# Rename the columns while extracting number and year from the Fire Number column
+wfbc_1217_tb <- wfbc_1217_tb |> 
+  dplyr::rename(
+    year = "Year", 
+    number_with_year = "Fire Number", 
+    fire_center = "Fire Centre", 
+    latitude = "Latitude", 
+    longitude = "Longitude", 
+    geographic = "Geographic", 
+    discovery_date = "Discovery Date", 
+    size_ha = "Size (ha)"
+  ) |> 
+  mutate(
+    number = substr(number_with_year, start = 1, stop = 6), 
+    year2 = as.numeric(substr(number_with_year, start = 9, stop = 12))
+  )
+
+wfbc_1217_tb
+```
+
+Now that we have modified the problems, we want to check whether there is missing latitude or longitude and whether year2 (extracted from Fire Number) corresponds to year:
+
+```{r}
+#| message: false
+#| warning: false
+#| error: false
+
+wfbc_1217_tb |> 
+  filter(
+    is.na(latitude) | 
+    is.na(longitude) | 
+    year != year2
+  )
+```
+
+<br>
+
+## Generate sf Object
+
+After cleaning the columns, we convert the dataframe into an sf object using the latitude and longitude columns. We also rename fields and adjust the coordinate reference system to match the KMZ dataset.
+
+```{r}
+#| message: false
+#| warning: false
+#| error: false
+#| code-fold: true
+#| classes: styled-output
+
+wfbc_1217_sf <- st_as_sf(
+  wfbc_1217_tb, 
+  coords = c("longitude", "latitude"), 
+  crs = 4326
+) |> 
+  select(year, number, fire_center, geographic, discovery_date, size_ha, geometry)
+
+wfbc_1217_sf <- st_transform(wfbc_1217_sf, st_crs(wfbc_parsed_sf))
+# print(st_crs(wfbc_1217_sf))
+wfbc_1217_sf
+```
+
+## Check Duplicate
+
+We check for any duplicate records.
+
+```{r}
+#| message: false
+#| warning: false
+#| error: false
+#| code-fold: true
+#| classes: styled-output
+
+duplicated_rows <- wfbc_1217_sf[
+  duplicated(
+    wfbc_1217_sf[, c("year", "number")]
+  ), 
+]
+
+cat(paste0("The number of duplicate rows: ", nrow(duplicated_rows)))
+```
+
+<br>
+
+## Check NULL
+
+We also examine missing values in the key columns: **year**, **number**, **size_ha** or **geometry**.
+
+```{r}
+#| message: false
+#| warning: false
+#| error: false
+#| code-fold: true
+#| classes: styled-output
+
+wfbc_incomp_sf <- wfbc_1217_sf |>
+  filter(
+    is.na(year) |
+    is.na(number) |
+    is.na(size_ha) |
+    is.na(geometry)
+  )
+
+cat(paste0("The number of rows with missing values: ", nrow(wfbc_incomp_sf)))
+```
+
+<br>
+
+In the next chapter, we will compare the scraped table data with the data extracted from the KMZ files.
+
+<br>
+
+# Compare Website Table Data with KMZ File Data
+
+## ID-wise Difference
+
+The website table includes only wildfire incidents greater than 5 hectares. We begin by comparing annual wildfire counts from the website table:
+
+```{r}
+#| message: false
+#| warning: false
+#| error: false
+#| code-fold: true
+#| classes: styled-output
+
+wfbc_1217_sf |> 
+  group_by(year) |> 
+  summarise(count = n())
+```
+
+<br>
+
+Next, we examine the counts of >5 hectare wildfires from the KMZ data:
+
+```{r}
+#| message: false
+#| warning: false
+#| error: false
+#| code-fold: true
+#| classes: styled-output
+
+wfbc_file_major <- wfbc_parsed_sf |> 
+  filter(year %in% seq(2012, 2017, by=1) & size_ha >= 5.0)
+
+wfbc_file_major |> 
+  group_by(year) |> 
+  summarise(count = n())
+```
+
+<br>
+
+The numbers are nearly identical, except the website table includes 5 additional records in 2024, and the KMZ files include 4 additional records in 2017. These are the specific records:
+
+```{r}
+#| message: false
+#| warning: false
+#| error: false
+#| code-fold: true
+#| classes: styled-output
+
+wfbc_tbl_kmz_df <- st_drop_geometry(wfbc_1217_sf) |> 
+  full_join(
+    st_drop_geometry(wfbc_file_major), 
+    by = c( "year", "number"), 
+    suffix = c("_tbl", "_kmz")
+  )
+
+diff_tbl_kmz_df <- wfbc_tbl_kmz_df |> 
+  filter(is.na(size_ha_tbl) | is.na(latitude)) |> 
+  select(year, number, size_ha_tbl, size_ha_kmz)
+
+wfbc_tbl_kmz_df <- wfbc_tbl_kmz_df |> 
+  select(year, number, size_ha_tbl, size_ha_kmz)
+
+diff_tbl_kmz_df
+```
+
+<br>
+
+The geographic differences between the two datasets can be visualized on the following map:
+
+```{r}
+#| message: false
+#| warning: false
+#| error: false
+#| code-fold: true
+#| classes: styled-output
+
+diff_2014_sf <- wfbc_1217_sf |> 
+  filter(
+    year == 2014 & 
+    number %in% filter(diff_tbl_kmz_df, year == 2014)$number
+  ) |> 
+  select(year, number, size_ha, geometry)
+
+diff_2017_sf <- wfbc_file_major |> 
+  filter(
+    year == 2017 & 
+    number %in% filter(diff_tbl_kmz_df, year == 2017)$number
+  ) |> 
+  select(year, number, size_ha, geometry)
+
+diff_tbl_kmz_sf <- bind_rows(diff_2014_sf, diff_2017_sf) |>
+  mutate(year_str = as.character(year))
+
+bc <- bc_bound()
+
+map_bc <- tm_shape(bc) +
+  tm_fill() + 
+  tm_borders(lwd = 1) 
+
+map_bc + 
+  tm_shape(diff_tbl_kmz_sf) +
+  tm_symbols(
+    fill = "year_str", 
+    fill.legend = tm_legend(title = "Year"),
+    size = "size_ha", 
+    size.legend = tm_legend(title = "Size(ha)"),
+  ) +
+  tm_shape(filter(diff_tbl_kmz_sf, !number %in% c("C10743", "K70657"))) +
+  tm_text(
+    text = "number",
+    size = 0.5,
+    col = "black",
+    xmod = 1.5,
+    ymod = -1.0
+  )  +
+  tm_shape(filter(diff_tbl_kmz_sf, number %in% c("C10743", "K70657"))) +
+  tm_text(
+    text = "number",
+    size = 0.5,
+    col = "black",
+    xmod = -1.5,
+    ymod = 1.0
+  ) + 
+  tm_layout(
+    main.title = "Diff between the website table and KMZ files", 
+    main.title.position = "center"
+  ) +
+  tm_compass(position = c("LEFT", "BOTTOM")) +
+  tm_scale_bar(
+    position = c("LEFT", "BOTTOM"), 
+    breaks = c(0, 50, 100, 150, 200)
+  ) + 
+  tm_credits(
+    data_source, 
+    position = tm_pos_out(cell.h = "center", cell.v = "bottom")
+  )
+```
+
+We cannot clearly determine why these wildfire records appear in only one of the sources. The discrepancy may result from later data updates or inconsistencies in data management.
+
+<br>
+
+## Size-wise Difference
+
+There may also be records where fire sizes differ between the website table and the KMZ dataset. We examine those differences:
+
+```{r}
+#| message: false
+#| warning: false
+#| error: false
+#| code-fold: true
+#| classes: styled-output
+
+wfbc_tbl_kmz_df |> filter(size_ha_tbl != size_ha_kmz)
+```
+
+Only one record shows a size discrepancy. Again, the reason is unclear.
+
+<br>
+
+## Location-wise Difference
+
+While the KMZ files include geometry directly, the geometry in the website table was calculated from latitude and longitude values. This may lead to location mismatches. Below is a comparison of major wildfire locations in 2012 from both sources:
+
+```{r}
+#| message: false
+#| warning: false
+#| code-fold: true
+#| classes: styled-output
+
+map_bc + 
+  # Bind the table sf and KMZ sf
+  bind_rows(
+    x = wfbc_parsed_sf |> 
+      filter(year == 2012 & size_ha >= 5) |> 
+      mutate(source = "KMZ") |> 
+      select(source, year, number, geometry), 
+    y = wfbc_1217_sf |> 
+      filter(year == 2012) |> 
+      mutate(source = "table") |> 
+      select(source, year, number, geometry)
+  ) |> 
+  # Plot the points
+  tm_shape() +
+  tm_symbols(
+    fill = "source", 
+    fill.legend = tm_legend(title = "Data Source"),
+    size = 0.3
+  ) +
+  tm_compass(position = c("LEFT", "BOTTOM")) +
+  tm_scale_bar(
+    position = c("LEFT", "BOTTOM"), 
+    breaks = c(0, 50, 100, 150, 200)
+  ) + 
+  tm_layout(
+    main.title = "Distance of the same points from the KMZ files and website table (2012)", 
+    main.title.position = "center"
+  ) + 
+  tm_credits(
+    data_source, 
+    position = tm_pos_out(cell.h = "center", cell.v = "bottom")
+  )
+```
+
+As shown, corresponding points do not align spatially. The geographic differences may arise naturally when combining two different coordinate systems. To quantify the gap, we examine the distance distribution between matching records:
+
+```{r, fig.height=6}
+#| message: false
+#| warning: false
+#| code-fold: true
+#| fig-height: 6
+
+# The function to calculate the distance of the same points from the two sources
+# (for all the records from the website table)
+calc_distance <- function(row){
+  year_target <- wfbc_1217_sf$year[row]
+  number_target <- wfbc_1217_sf$number[row]
+  target_sf <- wfbc_file_major |> 
+    filter(year == year_target & number == number_target)
+
+  if (nrow(target_sf) == 0) {
+    size_ha <- NA
+  } else {
+    if (nrow(target_sf) > 1) { 
+      print("Warning: Multiple matches")
+    }
+    size_ha <- target_sf$size_ha[1]
+  }
+  
+  return(
+    data.frame(
+      year = year_target, 
+      number = number_target, 
+      size_ha_1217 = wfbc_1217_sf$size_ha[row], 
+      size_ha_file = size_ha, 
+      distance_metre = st_distance(wfbc_1217_sf[row, ], target_sf[1, ]) |> as.numeric()
+    )
+  )
+}
+
+# Calculate the distance for every point
+wfbc_mix_df <- map_dfr(1:nrow(wfbc_1217_sf), calc_distance)
+
+# Add the records from KMZ files which have not been included
+wfbc_mix_df <- full_join(wfbc_mix_df, wfbc_file_major, by = c("year", "number"))
+wfbc_mix_df <- wfbc_mix_df |> mutate(
+  size_ha_file = case_when(
+    is.na(size_ha_1217) ~ size_ha,
+    TRUE ~ size_ha_file
+  )
+) |> select(
+  year, number, size_ha_1217, size_ha_file, distance_metre
+)
+
+# Show the distribution of distance, excluding null
+boxplot_distance <- wfbc_mix_df |> 
+  filter(!is.na(distance_metre)) |>
+  ggplot(
+    aes(x = factor(0), y = distance_metre) 
+  ) +
+  geom_boxplot() +
+  scale_y_continuous(
+    limits = c(0, 52000), 
+    breaks = c(0, 10000, 20000, 30000, 40000, 50000),
+    labels = c("0", "10", "20", "30", "40", "50")
+  ) +
+  labs(
+    title = "Distance of the same points from the KMZ files and website table", 
+    x = ""
+  ) + 
+  theme(
+    plot.title = element_text(hjust = 0.5), 
+    axis.title.x = element_blank(), 
+    axis.text.y = element_blank(), 
+    axis.ticks.y = element_blank()
+  ) + 
+  coord_flip()
+
+densityplot_distance <- wfbc_mix_df |> 
+  filter(!is.na(distance_metre)) |>
+  ggplot(
+    aes(x = distance_metre) 
+  ) +
+  geom_histogram(bins = 50) + 
+  scale_x_continuous(
+    limits = c(0, 52000), 
+    breaks = c(0, 10000, 20000, 30000, 40000, 50000),
+    labels = c("0", "10", "20", "30", "40", "50")
+  ) +
+  labs(
+    x = "Distance (km)",
+    y = "Count",
+    caption = data_source
+  )
+
+boxplot_distance / densityplot_distance
+```
+
+Most points differ by around 30 km, with some reaching 50 km. These differences are sizeable and suggest potential coordinate reference system issues. Due to time constraints, we cannot investigate further at this time.
+
+<br>
+
+# Further Analysis
+
+## Fire Feature Transition (2012 - 2024)
+We now examine changes in wildfire characteristics from 2012 to 2024 in terms of **size**, **frequency**, and **spatial distribution**. For this analysis, we use the KMZ dataset, as the scraped website table includes only 2012–2017.
+
+### Fire Size Transition (2012 - 2024)
+First, we observe the transition of wildfire sizes over time. Although most wildfire incidents are under 1 hectare, multiple years include extremely large fires exceeding 1,000 hectares, and some even surpass 100,000 hectares. Both the median and maximum fire sizes fluctuate noticeably throughout the 13-year period. These differences by year may be influenced by weather conditions or human-related factors. However, we cannot discuss their relationship in this project because weather data is not included in our analysis.
+
+```{r, fig.height=5}
+#| message: false
+#| warning: false
+#| code-fold: true
+#| classes: styled-output
+
+wfbc_parsed_sf |> 
+  ggplot(
+    aes(x = factor(year), y = size_ha) 
+  ) +
+  geom_boxplot() +
+  annotate("text", x = "2023", y = 1000, label = "missing", color = "red") + 
+  scale_y_log10(
+    breaks = c(0, 0.01, 0.1, 1, 10, 100, 1000, 10000, 100000),
+    labels = c("0", "0.01", "0.1", "1", "10", "100", "1,000", "10,000", "100,000")
+  ) +
+  labs(
+    title = "Fire size transition in BC over time (2012-2024)", 
+    x = "Year", 
+    y = "Size (ha)", 
+    caption = data_source
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5), 
+    plot.caption = element_text(size = 6)
+  )
+```
+
+<br>
+
+### Fire Frequency Transition (2012 - 2024)
+Wildfire frequency peaked in 2018, which recorded the worst year in this dataset, and reached the lowest point in 2020. Overall, the number of wildfires fluctuates around an average of approximately 1,802 incidents per year. Similar to fire size, this variation may be influenced by weather conditions or human activity, but further investigation would require supplementary datasets.
+
+```{r}
+#| message: false
+#| warning: false
+#| code-fold: true
+#| classes: styled-output
+
+fire_freq_mean <- wfbc_parsed_sf |> 
+  st_drop_geometry() |>
+  group_by(year) |> 
+  summarise(count = n()) |> 
+  pull(count) |> 
+  mean() |>
+  round()
+
+wfbc_parsed_sf |> 
+  ggplot(
+    aes(x = factor(year)) 
+  ) +
+  geom_bar() +
+  geom_hline(
+    yintercept = fire_freq_mean, 
+    linetype = "dashed", 
+    color = "red", 
+    size = 1
+  ) + 
+  annotate(
+    "text", 
+    x = "2020", 
+    y = 2100, 
+    label = paste0("mean ~ ", fire_freq_mean), 
+    color = "red"
+  ) + 
+  labs(
+    title = "The number of wildfires in BC (2012-2024)", 
+    x = "Year", 
+    y = "Count", 
+    caption = data_source
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5), 
+    plot.caption = element_text(size = 6)
+  )
+```
+
+<br>
+
+### Fire Distribution Transition (2012 - 2024)
+Spatial distribution patterns remain largely consistent across years. Most wildfires occur south of the central latitude of BC or in the northeastern region. This pattern persists throughout the entire observed period. To understand what drives these spatial differences, additional geographic data, such as vegetation type, population density, or infrastructure networks, would be necessary.
+
+```{r, fig.height=8}
+#| message: false
+#| warning: false
+#| code-fold: true
+#| classes: styled-output
+
+map_bc + wfbc_parsed_sf |> 
+  tm_shape() +
+  tm_dots(
+    fill = "black", 
+    fill.free = FALSE,
+    size = 0.2
+  ) +
+  tm_compass(position = c("LEFT", "BOTTOM")) +
+  tm_scale_bar(
+    position = c("LEFT", "BOTTOM"), 
+    breaks = c(0, 50, 100, 150, 200)
+  ) + 
+  tm_facets_wrap(by = "year", nrow = 3) + 
+  tm_layout(
+    main.title = "Wildfire geographic distribution transition in BC (2012-2024)", 
+    main.title.position = "center", 
+    main.title.size = 2
+  ) + 
+  tm_credits(
+    data_source, 
+    position = tm_pos_out(cell.h = "center", cell.v = "bottom")
+  )
+```
+
+
+## Cause
+
+In this section, we examine how different causes relate to wildfire characteristics. Cause information is available only in the KMZ dataset and only for selected years. Below are the counts of records that include cause information by year:
+
+```{r}
+#| message: false
+#| warning: false
+#| code-fold: true
+#| classes: styled-output
+
+wfbc_parsed_sf |> filter(!is.na(cause)) |> group_by(year) |> count()
+```
+
+The recorded causes fall into three categories: **Human**, **Lightning**, and **Person**:
+
+```{r}
+#| message: false
+#| warning: false
+#| code-fold: true
+#| classes: styled-output
+
+cat(
+  "The unique records of cause:", 
+  paste(
+    shQuote(wfbc_parsed_sf$cause |> unique(), type="sh"), 
+    collapse=", "
+  )
+)
+```
+
+Since **Human** and **Person** represent the same category, we merge them under **Human**.
+
+```{r}
+#| message: false
+#| warning: false
+#| code-fold: true
+#| classes: styled-output
+
+wfbc_parsed_sf <- wfbc_parsed_sf |> mutate(
+  cause = case_when(
+    cause == "Human" ~ "Human",
+    cause == "Person" ~ "Human", 
+    cause == "Lightning" ~ "Lightning", 
+    TRUE ~ NA
+  )
+)
+
+cat(
+  "The unique records of cause:", 
+  paste(
+    shQuote(wfbc_parsed_sf$cause |> unique(), type="sh"), 
+    collapse=", "
+  )
+)
+```
+
+<br>
+
+### Cause x Fire Size
+We first examine fire size distributions by cause. Both human-caused and lightning-caused wildfires can grow extremely large (over 10,000 hectares). However, lightning-caused fires more frequently remain small relative to human-caused fires:
+
+```{r}
+#| message: false
+#| warning: false
+#| code-fold: true
+#| classes: styled-output
+
+wfbc_parsed_sf |> 
+  filter(!is.na(cause)) |> 
+  ggplot(
+    aes(x = cause, y = size_ha) 
+  ) +
+  geom_boxplot() + 
+  scale_y_log10(
+    breaks = c(0, 0.01, 0.1, 1, 10, 100, 1000, 10000, 100000),
+    labels = c("0", "0.01", "0.1", "1", "10", "100", "1,000", "10,000", "100,000")
+  ) +
+  labs(
+    title = "Distribution of fire sizes in BC by cause (2012-2016)", 
+    x = "Cause", 
+    y = "Size (ha)", 
+    caption = data_source
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5), 
+    plot.caption = element_text(size = 6)
+  )
+```
+
+<br>
+
+### Cause x Fire Frequency
+Overall, most wildfires are caused by lightning, accounting for approximately 60% of recorded incidents. Cause information is available only up to 2016, so it is difficult to evaluate whether the high fire frequency in 2018 or the low frequency in 2020 relates to differences in causes. If cause data continued beyond 2016, this comparison could clarify those trends.
+
+```{r}
+#| message: false
+#| warning: false
+#| code-fold: true
+#| classes: styled-output
+
+fire_cause_rate_mean <- wfbc_parsed_sf |> 
+  st_drop_geometry() |> 
+  filter(!is.na(cause)) |> 
+  group_by(year, cause) |> 
+  summarise(cause_count = n()) |> 
+  pivot_wider(names_from = cause, values_from = cause_count) |> 
+  mutate(lightning_rate = Lightning / (Human + Lightning)) |>
+  pull(lightning_rate) |> 
+  mean() |>
+  round(digits = 4)
+
+
+wfbc_parsed_sf |> 
+  filter(!is.na(cause)) |> 
+  arrange() |> 
+  ggplot(
+    aes(
+      x = factor(year), 
+      fill = fct_inorder(cause), 
+    ) 
+  ) +
+  geom_bar(position = "fill") +
+  geom_hline(
+    yintercept = fire_cause_rate_mean, 
+    linetype = "dashed", 
+    color = "red", 
+    size = 1
+  ) + 
+  annotate(
+    "text", 
+    x = "2014", 
+    y = 0.50, 
+    label = paste0("mean ~ ", fire_cause_rate_mean), 
+    color = "red"
+  ) + 
+  labs(
+    title = "The ratio of cause of wildfire in BC (2012-2016)", 
+    x = "Year", 
+    y = "Rate", 
+    fill = "Cause", 
+    caption = data_source
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5), 
+    plot.caption = element_text(size = 5)
+  )
+```
+
+<br>
+
+### Cause x Fire Distribution
+The spatial patterns of human-caused and lightning-caused wildfires appear broadly similar. Human-caused fires likely occur in or near populated and accessible regions, whereas lightning-caused fires can occur anywhere with sufficient burnable fuel, regardless of human presence. However, confirming these assumptions requires additional geographic datasets such as forest coverage, elevation, or population distribution.
+
+```{r, fig.height=8}
+#| message: false
+#| warning: false
+#| code-fold: true
+#| classes: styled-output
+
+map_bc + wfbc_parsed_sf |> 
+  filter(!is.na(cause)) |> 
+  tm_shape() +
+  tm_dots(
+    fill = "cause", 
+    fill.free = FALSE,
+    size = 0.2
+  ) +
+  tm_compass(position = c("LEFT", "BOTTOM")) +
+  tm_scale_bar(
+    position = c("LEFT", "BOTTOM"), 
+    breaks = c(0, 50, 100, 150, 200)
+  ) + 
+  tm_facets_wrap(by = "year", nrow = 2) + 
+  tm_layout(
+    main.title = "Wildfire geographic distribution transition in BC by cause (2012-2016)", 
+    main.title.position = "center", 
+    main.title.size = 2
+  ) + 
+  tm_credits(
+    paste0("\n\n\n\n\n\n\n\n", data_source), 
+    position = tm_pos_out(cell.h = "center", cell.v = "bottom"), 
+    size = 0.4
+  )
+```
+
+<br>
+
+# Conclusion
+
+In this project, we extracted and cleaned British Columbia wildfire data from KMZ files covering 2012–2024, handled inconsistencies in property names and missing information, and combined them into a single unified dataset. We also compared these KMZ data with wildfire records scraped from the BC Wildfire website, and while both sources generally aligned, they contained some differences in counts, size values, and geographic coordinates.
+
+Using the cleaned dataset, we performed exploratory analysis to examine wildfire trends over time. Our findings include:
+
+ - Wildfire size varies substantially year to year, with several extreme events exceeding 100,000 hectares.
+ - Wildfire frequency fluctuates around an average of ~1,800 incidents annually, peaking dramatically in 2018 and reaching the lowest point in 2020.
+ - Spatial distribution patterns remain consistent, with most fires occurring in southern BC and parts of the northeast.
+ - Lightning is the leading cause of wildfires where cause data are available, responsible for around 60% of incidents, although both human- and lightning-caused fires can produce extremely large events.
+
+Overall, this analysis highlights both the variability and the recurring patterns in wildfire characteristics across British Columbia. Future work could include incorporating additional datasets (such as weather, vegetation, or topography) to identify the reasons of fire feature changes over time, addressing coordinate system differences, and building predictive models to support wildfire management.

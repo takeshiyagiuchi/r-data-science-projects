@@ -1,0 +1,2604 @@
+---
+title: "DATA*6200 F25 Assignment1"
+author: "Takeshi Yagiuchi"
+toc: true
+number-sections: true
+format: 
+  html:
+    df-print: paged
+    embed-resources: true
+    code-background: true
+css: styles.css
+editor: visual
+---
+
+## Introduction
+In this project, we analyze the factors that influence income using the **ask_a_manager.xlsx** dataset. In particular, we examine how industry, age, work experience, and education affect income levels. This report is organized into two main sections: **Data Cleaning** and **Visualization and Analysis**.
+
+
+## Preparation
+Before working with the data, we first install and load the necessary R packages for this project:
+
+```{r}
+#| message: false
+#| warning: false
+# install.packages("corrplot")
+# install.packages("ggpp")
+# install.packages("gridExtra")
+# install.packages("readxl")
+# install.packages("tidyverse")
+library(corrplot)
+library(ggpp)
+library(glue)
+library(grid)
+library(gridExtra)
+library(readxl)
+library(scales)
+library(tidyverse)
+```
+
+
+## Data Cleaning
+### Preprocessing
+Before cleaning specific target columns, we begin by reorganizing the dataframe and handling any invalid or inconsistent records that could affect the overall analysis.
+
+First, we load the dataset into R as a dataframe:
+
+```{r}
+#| message: false
+#| warning: false
+salaries_df <- read_excel("ask_a_manager.xlsx")
+```
+
+Next, we perform a quick inspection to check the size of the dataframe and review its column names:
+
+```{r}
+#| code-fold: true
+#| classes: styled-output
+"
+the number of columns: {salaries_df |> ncol()}
+the number of rows: {salaries_df |> nrow()}
+column names:
+ \"{salaries_df |> colnames() |> glue_collapse(sep = '\"\n \"')}\"
+" |> glue() |> print()
+```
+
+It appears that the original survey questions were used as column names, which makes data processing cumbersome. To simplify the workflow, we rename these columns and add two new columns, **id** and **valid**, for convenience during analysis:
+
+```{r}
+#| code-fold: true
+#| classes: styled-output
+
+# Add "id" column to handle rows more easily
+salaries_df$id <- 1:nrow(salaries_df)
+# Also add "valid" column indicating whether each column can be used for analysis
+salaries_df$valid <- TRUE
+# Rename the existing columns with concise names 
+salaries_df <- salaries_df |> 
+  dplyr::rename(
+    timestamp = `Timestamp`, 
+    age = `How old are you?`, 
+    industry = `What industry do you work in?`, 
+    job_title = `Job title`, 
+    job_title_comments = `If your job title needs additional context, please clarify here:`, 
+    annual_salary = `What is your annual salary? (You'll indicate the currency in a later question. If you are part-time or hourly, please enter an annualized equivalent -- what you would earn if you worked the job 40 hours a week, 52 weeks a year.)`, 
+    extra_compensation = `How much additional monetary compensation do you get, if any (for example, bonuses or overtime in an average year)? Please only include monetary compensation here, not the value of benefits.`, 
+    currency1 = `Please indicate the currency`, 
+    currency2 = `If "Other," please indicate the currency here:`, 
+    income_context = `If your income needs additional context, please provide it here:`, 
+    country = `What country do you work in?`, 
+    us_state = `If you're in the U.S., what state do you work in?`, 
+    city = `What city do you work in?`, 
+    years = `How many years of professional work experience do you have overall?`, 
+    years_in_field = `How many years of professional work experience do you have in your field?`, 
+    education = `What is your highest level of education completed?`, 
+    gender = `What is your gender?`, 
+    race = `What is your race? (Choose all that apply.)`
+  )
+# Sort the columns for convenience
+salaries_df <- salaries_df[, c(
+    "id", "valid", "timestamp", "age", "industry", "job_title", "job_title_comments", "annual_salary", "extra_compensation", "currency1", "currency2", "income_context", "country", "us_state", "city", "years", "years_in_field", "education", "gender", "race"
+)]
+
+# Print out the result
+salaries_df |> colnames()
+```
+
+At this stage, we also examine the data types of each column to ensure they are appropriate:
+
+```{r}
+#| code-fold: true
+#| classes: styled-output
+
+for (i in colnames(salaries_df)) {
+  "{i}: {class(salaries_df[[i]])}" |> glue() |> print()
+}
+```
+
+<br>
+Before cleaning individual columns, we exclude unwanted or invalid records. Since the data was collected from random respondents, some entries may contain unrealistic or intentionally misleading information. To identify such cases, we inspect columns with many missing values (e.g., **currency2**), as rows with numerous null entries often contain unreliable data:
+
+```{r}
+#| code-fold: true
+#| classes: styled-output
+
+salaries_df |> filter(!is.na(salaries_df$currency2))
+```
+
+<br>
+The records with id = **28008**, **28010**, **28016**, **28022**, and **28051** were clearly invalid and irrelevant to the analysis. These records are therefore marked as invalid:
+
+```{r}
+#| code-fold: true
+#| classes: styled-output
+
+salaries_df$valid[
+  which(salaries_df$id %in% c(28008, 28010, 28016, 28022, 28050))
+] <- FALSE
+
+salaries_df |> filter(salaries_df$valid == FALSE)
+```
+
+<br>
+With these steps completed, the preprocessing phase is done. In the next sections, we will clean and prepare the columns directly related to the core analysis tasks.
+
+<br>
+
+### Currency
+The most crucial component of this dataset is the income information. However, we cannot directly compare compensation values in their raw form because they are expressed in different currencies. Therefore, the first step is to organize and standardize the currency information.
+
+Currently, currency data is stored across two columns: **currency1** and **currency2**.
+While **currency1** usually contains valid information, **currency2** is used when “Other” is selected in **currency1**. To consolidate this information, we create a new column, **currency**, which combines data from both fields:
+
+```{r}
+#| code-fold: true
+#| classes: styled-output
+
+# Add a new column "currency" combining currency1 and currency2
+salaries_df <- salaries_df |> 
+  mutate(
+    currency = ifelse(currency1 == "Other", toupper(currency2), currency1)
+  )
+
+salaries_df <- salaries_df[, c(
+    "id", "valid", "timestamp", "age", "industry", "job_title", "job_title_comments", "annual_salary", "extra_compensation", "currency1", "currency2", "currency", "income_context", "country", "us_state", "city", "years", "years_in_field", "education", "gender", "race"
+)]
+
+salaries_df |> 
+  select(currency) |> 
+  distinct() |>
+  arrange(currency)
+```
+
+<br>
+Since **currency2** is a free-text field, its values appear in various formats.
+Because **currency1** follows the **ISO 4217 three-letter currency code**, we convert all entries in the new currency column to this standard format:
+
+```{r}
+#| code-fold: true
+#| classes: styled-output
+
+# Convert all the currency info to the ISO 4217 three-letter code
+salaries_df$currency[
+  which(
+    salaries_df$currency == "ARGENTINE PESO" | 
+    salaries_df$currency == "ARGENTINIAN PESO (ARS)" | 
+    salaries_df$currency == "PESO ARGENTINO"
+  )
+] <- "ARS"
+
+salaries_df$currency[
+  which(
+    salaries_df$currency == "AUD" | 
+    salaries_df$currency == "AUD AUSTRALIAN" | 
+    salaries_df$currency == "AUSTRALIAN DOLLARS" | 
+    salaries_df$currency == "NZD"
+  )
+] <- "AUD/NZD"
+
+salaries_df$currency[
+  which(
+    salaries_df$currency == "BR$" | 
+    salaries_df$currency == "BRL (R$)"
+  )
+] <- "BRL"
+
+salaries_df$currency[
+  which(
+    salaries_df$currency == "CHINA RMB" | 
+    salaries_df$currency == "RMB (CHINESE YUAN)"
+  )
+] <- "CNY"
+
+salaries_df$currency[
+  which(
+    salaries_df$currency == "CZECH CROWNS"
+  )
+] <- "CZK"
+
+salaries_df$currency[
+  which(
+    salaries_df$currency == "DANISH KRONER"
+  )
+] <- "DKK"
+
+salaries_df$currency[
+  which(
+    salaries_df$currency == "EURO"
+  )
+] <- "EUR"
+
+salaries_df$currency[
+  which(
+    salaries_df$currency == "CROATIAN KUNA"
+  )
+] <- "HRK"
+
+salaries_df$currency[
+  which(
+    salaries_df$currency == "ILS (SHEKEL)" | 
+    salaries_df$currency == "ILS/NIS" | 
+    salaries_df$currency == "ISRAELI SHEKELS" | 
+    salaries_df$currency == "NIS (NEW ISRAELI SHEKEL)"
+  )
+] <- "ILS"
+
+salaries_df$currency[
+  which(
+    salaries_df$currency == "INDIAN RUPEES" | 
+    salaries_df$currency == "INR (INDIAN RUPEE)" | 
+    salaries_df$currency == "RUPEES"  # 1 record working in India
+  )
+] <- "INR"
+
+salaries_df$currency[
+  which(
+    salaries_df$currency == "KOREAN WON" | 
+    salaries_df$currency == "KRW (KOREAN WON)"
+  )
+] <- "KRW"
+
+salaries_df$currency[
+  which(
+    salaries_df$currency == "MEXICAN PESOS"
+  )
+] <- "MXN"
+
+salaries_df$currency[
+  which(
+    salaries_df$currency == "RM"  # 1 record working in Malaysia
+  )
+] <- "MYR"
+
+salaries_df$currency[
+  which(
+    salaries_df$currency == "NORWEGIAN KRONER (NOK)"
+  )
+] <- "NOK"
+
+salaries_df$currency[
+  which(
+    salaries_df$currency == "PHILIPPINE PESO" | 
+    salaries_df$currency == "PHILIPPINE PESO (PHP)" | 
+    salaries_df$currency == "PHILIPPINE PESOS" | 
+    salaries_df$currency == "PHP (PHILIPPINE PESO)"
+  )
+] <- "PHP"
+
+salaries_df$currency[
+  which(
+    salaries_df$currency == "PLN (POLISH ZLOTY)" | 
+    salaries_df$currency == "PLN (ZWOTY)" | 
+    salaries_df$currency == "POLISH ZŁOTY"
+  )
+] <- "PLN"
+
+salaries_df$currency[
+  which(
+    salaries_df$currency == "SINGAPORE DOLLARA"
+  )
+] <- "SGD"
+
+salaries_df$currency[
+  which(
+    startsWith(salaries_df$currency, "THAI")
+  )
+] <- "THB"
+
+salaries_df$currency[
+  which(
+    salaries_df$currency == "TAIWANESE DOLLARS"
+  )
+] <- "TWD"
+
+salaries_df$currency[
+  which(
+    salaries_df$currency == "AMERICAN DOLLARS" | 
+    salaries_df$currency == "EQUITY" |  # They live in the US
+    salaries_df$currency == "US DOLLAR"
+  )
+] <- "USD"
+
+# Remove duplicate and check all the sort of currencies
+salaries_df |>
+  select(currency) |> 
+  distinct() |>
+  arrange(currency)
+```
+
+<br>
+Next, we handle missing values in the **currency** column:
+
+```{r}
+#| code-fold: true
+
+salaries_df |> filter(is.na(currency))
+```
+
+<br>
+Although the exact currencies for these missing records are unknown, we can infer them from the **respondents’ work countries**. While this approach is not perfectly accurate, the inferred currency values seem reasonable based on the reported income amounts. To retain as many records as possible for analysis, we fill in missing currencies according to the country of employment:
+
+```{r}
+#| code-fold: true
+#| classes: styled-output
+
+salaries_df$currency[which(salaries_df$id == 9345)] <- "USD"
+salaries_df$currency[which(salaries_df$id == 18844)] <- "MYR"
+salaries_df$currency[which(salaries_df$id == 18883)] <- "MYR"
+salaries_df$currency[which(salaries_df$id == 18905)] <- "USD"
+salaries_df$currency[which(salaries_df$id == 27960)] <- "INR"
+
+"
+The number of nulls in the currency column: {salaries_df |> filter(is.na(currency)) |> nrow()}
+" |> glue() |> print()
+```
+
+<br>
+At this stage, we notice a few special cases where **currency1** is not “**Other**,” yet **currency2** still contains relevant information:
+
+```{r}
+#| code-fold: true
+
+salaries_df |> 
+  filter(
+    salaries_df$valid == TRUE & 
+    salaries_df$currency1 != "Other" &
+    !is.na(salaries_df$currency2)
+  )
+```
+
+<br>
+For the records with **id** = **1916**, **3606**, **11658**, **14074**, **25614**, **27975**, and **28031**, the currency information in **currency2** should be used instead of **currency1**. We update those entries accordingly:
+
+```{r}
+#| code-fold: true
+
+salaries_df$currency[
+  which(salaries_df$id == 1916)
+] <- "KWD"
+
+salaries_df$currency[
+  which(salaries_df$id == 3606)
+] <- "COP"
+
+salaries_df$currency[
+  which(salaries_df$id %in% c(11658, 14074))
+] <- "NOK"
+
+salaries_df$currency[
+  which(salaries_df$id == 25614)
+] <- "DKK"
+
+salaries_df$currency[
+  which(salaries_df$id == 27975)
+] <- "PKR"
+
+salaries_df$currency[
+  which(salaries_df$id == 28031)
+] <- "HKD"
+
+salaries_df |>
+  select(currency) |> 
+  distinct() |>
+  arrange(currency)
+```
+
+<br>
+As the final step in cleaning the currency data, we address records labeled **AUD/NZD**:
+
+```{r}
+#| code-fold: true
+
+salaries_df |> 
+  filter(
+    salaries_df$valid == TRUE & 
+    salaries_df$currency == "AUD/NZD"
+  )
+```
+
+
+<br>
+The original dataset includes an **AUD/NZD** option under **currency1**, but Australian Dollar (AUD) and New Zealand Dollar (NZD) are distinct currencies with different exchange rates. Therefore, we split this combined category into separate AUD and NZD currencies.
+
+By reviewing the records, we find that most respondents with AUD/NZD entries are based in Australia or New Zealand, so assigning currencies based on workplace location is reasonable. However, two records have AUD/NZD listed as their currency while their workplaces are outside of Australia and New Zealand:
+
+```{r}
+#| code-fold: true
+
+salaries_df |> 
+  filter(
+    salaries_df$id %in% c(17427, 25511) & 
+    salaries_df$currency == "AUD/NZD"
+  )
+```
+
+<br>
+Since their true currencies cannot be determined confidently, we exclude those two records. For all other AUD/NZD entries, we assign the currency based on the respondent’s workplace:
+
+```{r}
+#| code-fold: true
+
+salaries_df$valid[
+  which(salaries_df$id %in% c(17427, 25511))
+] <- FALSE
+
+salaries_df$currency[
+  which(
+    salaries_df$currency == "AUD/NZD" &
+    startsWith(salaries_df$country, "Australi")
+  )
+] <- "AUD"
+
+salaries_df$currency[
+  which(
+    salaries_df$currency == "AUD/NZD" &
+    (
+      salaries_df$country == "NZ" | 
+      "New Zealand" %in% salaries_df$country
+    )
+  )
+] <- "NZD"
+
+salaries_df |>
+  select(currency) |> 
+  distinct() |>
+  arrange(currency)
+```
+
+<br>
+With these adjustments, the currency information is now ready for analysis. To enable income comparison across all records, we add **exchange rate** data and convert all income values to a common currency, **USD**. For convenience, we also include **currency descriptions** alongside their respective codes:
+
+```{r}
+#| code-fold: true
+
+# Add new columns "currency_desc" and "currency_rate"
+salaries_df <- salaries_df |> 
+  mutate(
+    currency_desc = case_when(
+      currency == "ARS" ~ "Argentine Peso",  # 0.00074
+      currency == "AUD" ~ "Australian Dollar",  # 0.65
+      currency == "BDT" ~ "Bangladeshi Taka",  # 0.0082
+      currency == "BRL" ~ "Brazilian Real",  # 0.18
+      currency == "CAD" ~ "Canadian Dollar",  # 0.71
+      currency == "CHF" ~ "Swiss Franc",  # 1.24
+      currency == "CNY" ~ "Chinese Yuan",  # 0.14
+      currency == "COP" ~ "Colombian Peso",  # 0.00025
+      currency == "CZK" ~ "Czech Koruna",  # 0.048
+      currency == "DKK" ~ "Danish Krone",  # 0.15
+      currency == "EUR" ~ "Euro",  # 1.16
+      currency == "GBP" ~ "British Pound",  # 1.33
+      currency == "HKD" ~ "Hong Kong Dollar",  # 0.13
+      currency == "HRK" ~ "Croatian Kuna",  # 0.15
+      currency == "IDR" ~ "Indonesian Rupiah",  # 0.000060
+      currency == "ILS" ~ "Israeli New Shekel",  # 0.30
+      currency == "INR" ~ "Indian Rupee",  # 0.011
+      currency == "JPY" ~ "Japanese Yen",  # 0.0066
+      currency == "KRW" ~ "South Korean won",  # 0.00070
+      currency == "KWD" ~ "Kuwaiti Dinar",  # 3.26
+      currency == "LKR" ~ "Sri Lankan Rupee",  # 0.0033
+      currency == "MXN" ~ "Mexican Peso",  # 0.054
+      currency == "MYR" ~ "Malaysian Ringgit",  # 0.24
+      currency == "NGN" ~ "Nigerian Naira",  # 0.00068
+      currency == "NOK" ~ "Norwegian Krone",  # 0.099
+      currency == "NTD" ~ "New Taiwan",  # 0.033
+      currency == "NZD" ~ "New Zealand Dollar",  # 0.57
+      currency == "PHP" ~ "Philippine peso",  # 0.017
+      currency == "PKR" ~ "Pakistani Rupee",  # 0.0035
+      currency == "PLN" ~ "Polish złoty",  # 0.27
+      currency == "SAR" ~ "Saudi Riyal",  # 0.27
+      currency == "SEK" ~ "Swedish Krona",  # 0.11
+      currency == "SGD" ~ "Singapore Dollar",  # 0.77
+      currency == "THB" ~ "Thai Baht",  # 0.031
+      currency == "TRY" ~ "Turkish lira",  # 0.024
+      currency == "TTD" ~ "Trinidad and Tobago Dollar",  # 0.15
+      currency == "TWD" ~ "New Taiwan dollar",  # 0.033
+      currency == "USD" ~ "United States Dollar",  # 1
+      currency == "ZAR" ~ "South African Rand",  # 0.058
+      TRUE ~ "-"
+    ),
+    currency_rate = case_when(
+      currency == "ARS" ~ 0.00074,
+      currency == "AUD/NZD" ~ 0.65,
+      currency == "BDT" ~ 0.0082,
+      currency == "BRL" ~ 0.18,
+      currency == "CAD" ~ 0.71,
+      currency == "CHF" ~ 1.24,
+      currency == "CNY" ~ 0.14,
+      currency == "COP" ~ 0.00025,
+      currency == "CZK" ~ 0.048,
+      currency == "DKK" ~ 0.15,
+      currency == "EUR" ~ 1.16,
+      currency == "GBP" ~ 1.33,
+      currency == "HKD" ~ 0.13,
+      currency == "HRK" ~ 0.15,
+      currency == "IDR" ~ 0.000060,
+      currency == "ILS" ~ 0.30,
+      currency == "INR" ~ 0.011,
+      currency == "JPY" ~ 0.0066,
+      currency == "KRW" ~ 0.00070,
+      currency == "KWD" ~ 3.26,
+      currency == "LKR" ~ 0.0033,
+      currency == "MXN" ~ 0.054,
+      currency == "MYR" ~ 0.24,
+      currency == "NGN" ~ 0.00068,
+      currency == "NOK" ~ 0.099,
+      currency == "NTD" ~ 0.033,
+      currency == "NZD" ~ 0.57,
+      currency == "PHP" ~ 0.017,
+      currency == "PKR" ~ 0.0035,
+      currency == "PLN" ~ 0.27,
+      currency == "SAR" ~ 0.27,
+      currency == "SEK" ~ 0.11,
+      currency == "SGD" ~ 0.77,
+      currency == "THB" ~ 0.031,
+      currency == "TRY" ~ 0.024,
+      currency == "TTD" ~ 0.15,
+      currency == "TWD" ~ 0.033,
+      currency == "USD" ~ 1,
+      currency == "ZAR" ~ 0.058,
+      TRUE ~ 1
+    )
+  )
+
+salaries_df <- salaries_df[, c(
+    "id", "valid", "timestamp", "age", "industry", "job_title", "job_title_comments", "annual_salary", "extra_compensation", "currency1", "currency2", "currency", "currency_desc", "currency_rate", "income_context", "country", "us_state", "city", "years", "years_in_field", "education", "gender", "race"
+)]
+
+salaries_df |>
+  select(currency, currency_desc, currency_rate) |> 
+  distinct() |>
+  arrange(currency)
+```
+
+<br>
+
+### Income
+Now that the currency information has been organized, we can apply the exchange rates to the income data. Before proceeding, however, we will handle the missing values:
+
+```{r}
+#| code-fold: true
+#| classes: styled-output
+"
+The number of nulls
+- annual_salary: {salaries_df |> filter(is.na(annual_salary)) |> nrow()}
+- extra_compensation: {salaries_df |> filter(is.na(extra_compensation)) |> nrow()}
+" |> glue() |> print()
+```
+
+<br>
+There are no null values in the **annual_salary** column, but many in **extra_compensation**. Since the missing values in **extra_compensation** likely indicate that respondents did not receive any additional pay, we will replace the nulls with **zeros**. We will also convert the **extra_compensation** column from a character type to an integer for proper calculation:
+
+```{r}
+#| code-fold: true
+#| classes: styled-output
+
+# Replace nulls in the "extra_compensation" column with "0"
+salaries_df$extra_compensation[
+  is.na(salaries_df$extra_compensation)
+] <- "0"
+
+# Convert the type of the "extra_compensation" column from char to int
+salaries_df$extra_compensation <- as.integer(salaries_df$extra_compensation)
+
+"
+The number of nulls
+- annual_salary: {salaries_df |> filter(is.na(annual_salary)) |> nrow()}
+- extra_compensation: {salaries_df |> filter(is.na(extra_compensation)) |> nrow()}
+
+The data types
+- annual_salary: {salaries_df$annual_salary |> class()}
+- extra_compensation: {salaries_df$extra_compensation |> class()}
+" |> glue() |> print()
+```
+
+<br>
+With the missing values resolved, we can now apply the exchange rates to the income columns. We will create two new columns, **annual_salary_usd** and **extra_compensation_usd**, and calculate the total as **annual_income_usd**:
+
+```{r}
+#| code-fold: true
+
+# Add "annual_salary_usd", "extra_compensation_usd", "annual_income_usd" columns
+salaries_df <- salaries_df |> 
+  mutate(
+    annual_salary_usd = annual_salary * currency_rate, 
+    extra_compensation_usd = extra_compensation * currency_rate, 
+    annual_income_usd = annual_salary_usd + extra_compensation_usd
+  )
+
+salaries_df <- salaries_df[, c(
+    "id", "valid", "timestamp", "age", "industry", "job_title", "job_title_comments", "annual_salary", "annual_salary_usd", "extra_compensation", "extra_compensation_usd", "annual_income_usd", "currency1", "currency2", "currency", "currency_desc", "currency_rate", "income_context", "country", "us_state", "city", "years", "years_in_field", "education", "gender", "race"
+)]
+
+salaries_df |> head()
+```
+
+<br>
+
+### Industry
+We will analyze the relationship between industry and salary as the first task, so let’s first examine and organize the **industry** column.
+
+Looking at the raw data:
+
+```{r}
+#| code-fold: true
+
+# Show the unrepeated items in the "industry" column
+salaries_df |>
+  select(industry) |> 
+  distinct() |>
+  arrange(industry)
+```
+
+<br>
+There are over 1,000 distinct industry entries, which is too many for meaningful comparison. Therefore, we need to consolidate and group them.
+
+First, let’s fix inconsistencies in the text formatting of industry names. The variations include:
+
+* Presence or absence of double quotation marks
+* Use or omission of spaces
+* Use of hyphens
+* “and” vs. “&”
+
+To improve consistency, we will 
+
+* Remove double quotation marks
+* Remove hyphens 
+* Replace “and” with “&”
+* Eliminate multiple consecutive spaces
+
+We will apply these modifications to create a new column **industry_mod**:
+
+```{r}
+#| code-fold: true
+
+# Add a new "industry_mod" column made modifications on the "industry" column
+salaries_df <- salaries_df |> 
+  mutate(
+    industry_mod = tolower(industry)
+  )
+salaries_df <- salaries_df[, c(
+    "id", "valid", "timestamp", "age", "industry", "industry_mod", "job_title", "job_title_comments", "annual_salary", "annual_salary_usd", "extra_compensation", "extra_compensation_usd", "annual_income_usd", "currency1", "currency2", "currency", "currency_desc", "currency_rate", "income_context", "country", "us_state", "city", "years", "years_in_field", "education", "gender", "race"
+)]
+salaries_df$industry_mod <- gsub("\"", "", salaries_df$industry_mod)
+salaries_df$industry_mod <- gsub(" and ", " & ", salaries_df$industry_mod)
+salaries_df$industry_mod <- gsub("/", " / ", salaries_df$industry_mod)
+salaries_df$industry_mod <- gsub("--", " - ", salaries_df$industry_mod)
+salaries_df$industry_mod <- gsub("-", " ", salaries_df$industry_mod)
+salaries_df$industry_mod <- gsub(" [ ]?", " ", salaries_df$industry_mod)
+
+salaries_df |>
+  select(industry_mod) |> 
+  distinct() |>
+  arrange(industry_mod)
+```
+
+<br>
+After cleaning, the number of unique industry entries decreases to **996**. Next, we will manually categorize them into broader groups to simplify analysis.
+
+Since categorization is inherently subjective, others may classify these differently. However, for this project, I have reviewed all entries and organized them into **59 industry categories** (see the code for details). Additionally, I created special categories for cases better excluded from the main analysis:
+
+* multiple jobs
+* self employed / entrepreneur
+* unemployment
+
+Industries that did not fit neatly into any category were grouped as “**Other**”, and records without industry information were labeled “**Unclear**”. These new categories are stored in the **industry_group** column:
+
+```{r}
+#| code-fold: true
+
+# Add "industry_group" column
+salaries_df <- salaries_df |> 
+  mutate(
+    industry_group = industry_mod
+  )
+# Sort columns
+salaries_df <- salaries_df[, c(
+    "id", "valid", "timestamp", "age", "industry", "industry_mod", "industry_group", "job_title", "job_title_comments", "annual_salary", "annual_salary_usd", "extra_compensation", "extra_compensation_usd", "annual_income_usd", "currency1", "currency2", "currency", "currency_desc", "currency_rate", "income_context", "country", "us_state", "city", "years", "years_in_field", "education", "gender", "race"
+)]
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "accounting") | 
+    startsWith(salaries_df$industry_mod, "corporate accounting") | 
+    startsWith(salaries_df$industry_mod, "i work at a property tax management company. not sure where this fits in. consulting maybe?")
+  )
+] <- "#accounting"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "administrat") | 
+    startsWith(salaries_df$industry_mod, "benefits administration") | 
+    startsWith(salaries_df$industry_mod, "executive leadership") |  # executive assistant
+    startsWith(salaries_df$industry_mod, "office admin")
+  )
+] <- "#administration"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "agriculture") | 
+    startsWith(salaries_df$industry_mod, "horticulture")
+  )
+] <- "#agriculture"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "animal") | 
+    startsWith(salaries_df$industry_mod, "per sitter") | 
+    salaries_df$industry_mod == "pet" | 
+    startsWith(salaries_df$industry_mod, "pet") | 
+    startsWith(salaries_df$industry_mod, "zoo")
+  )
+] <- "#animal health & welfare"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "architect") |
+    startsWith(salaries_df$industry_mod, "commercial landscaping") |
+    startsWith(salaries_df$industry_mod, "commercial building") |
+    startsWith(salaries_df$industry_mod, "concrete") | 
+    startsWith(salaries_df$industry_mod, "construction") | 
+    startsWith(salaries_df$industry_mod, "costruction admin") | 
+    startsWith(salaries_df$industry_mod, "engineering") | 
+    startsWith(salaries_df$industry_mod, "interior") | 
+    startsWith(salaries_df$industry_mod, "landscap") | 
+    salaries_df$industry_mod == "planning" | # transportation planning
+    startsWith(salaries_df$industry_mod, "urban planning")
+  )
+] <- "#architectural, engineering, & construction"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "defense") | 
+    startsWith(salaries_df$industry_mod, "dod") | 
+    startsWith(salaries_df$industry_mod, "maritime") | 
+    startsWith(salaries_df$industry_mod, "military") | 
+    startsWith(salaries_df$industry_mod, "obligatory military service") | 
+    startsWith(salaries_df$industry_mod, "soldier")
+  )
+] <- "#arms"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "art") | 
+    startsWith(salaries_df$industry_mod, "music") | 
+    startsWith(salaries_df$industry_mod, "performing arts")
+  )
+] <- "#art"
+
+salaries_df$industry_group[
+  which(startsWith(salaries_df$industry_mod, "association"))
+] <- "#association management"
+
+salaries_df$industry_group[
+  which(startsWith(salaries_df$industry_mod, "auto"))
+] <- "#automotive"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "aerospace") | 
+    startsWith(salaries_df$industry_mod, "airline") | 
+    startsWith(salaries_df$industry_mod, "aviation")
+  )
+] <- "#aviation"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "beauty") | 
+    startsWith(salaries_df$industry_mod, "cosmetology")
+  )
+] <- "#beauty and personal care"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "bio") | 
+    startsWith(salaries_df$industry_mod, "bitech") | 
+    startsWith(salaries_df$industry_mod, "probiotics") | 
+    startsWith(salaries_df$industry_mod, "veterinary biotech")
+  )
+] <- "#biology"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "business process outsourcing") | 
+    startsWith(salaries_df$industry_mod, "business services") | 
+    startsWith(salaries_df$industry_mod, "executive search") | 
+    startsWith(salaries_df$industry_mod, "global mobility") | 
+    startsWith(salaries_df$industry_mod, "hro") | 
+    startsWith(salaries_df$industry_mod, "human resources") | 
+    startsWith(salaries_df$industry_mod, "i work for indeed") | 
+    startsWith(salaries_df$industry_mod, "outsourc") | 
+    startsWith(salaries_df$industry_mod, "purchasing") | 
+    startsWith(salaries_df$industry_mod, "procurement") | 
+    startsWith(salaries_df$industry_mod, "recruitment") | 
+    startsWith(salaries_df$industry_mod, "sourcing & procurement") | 
+    startsWith(salaries_df$industry_mod, "staffing")
+  )
+] <- "#business process outsourcing"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "child") | 
+    startsWith(salaries_df$industry_mod, "caregiv") | 
+    startsWith(salaries_df$industry_mod, "daycare") | 
+    startsWith(salaries_df$industry_mod, "direct support professional in a group home")
+  )
+] <- "#caregiving"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "chemi")
+  )
+] <- "#chemical"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "cleaning") | 
+    startsWith(salaries_df$industry_mod, "industrial cleaning") | 
+    startsWith(salaries_df$industry_mod, "industrial hygiene") | 
+    startsWith(salaries_df$industry_mod, "janitorial")
+  )
+] <- "#cleaning"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "consult") | 
+    startsWith(salaries_df$industry_mod, "business or consulting") | 
+    startsWith(salaries_df$industry_mod, "env. consulting") | 
+    startsWith(salaries_df$industry_mod, "grantwriting consultants") | 
+    startsWith(salaries_df$industry_mod, "strategy") | 
+    endsWith(salaries_df$industry_mod, "consultant") | 
+    endsWith(salaries_df$industry_mod, "consulting")
+  )
+] <- "#consulting"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "awards & engraving") | 
+    startsWith(salaries_df$industry_mod, "cpg") | 
+    startsWith(salaries_df$industry_mod, "fmcg") | 
+    startsWith(salaries_df$industry_mod, "industrial supply") | 
+    startsWith(salaries_df$industry_mod, "my company sells & services various types of printers, mostly kyocera") | 
+    startsWith(salaries_df$industry_mod, "retail")
+  )
+] <- "#consumer goods"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "corporate service management") | 
+    startsWith(salaries_df$industry_mod, "corporate sustainability")
+  )
+] <- "#corporate in-house"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "grocery delivery")
+  )
+] <- "#couriers & local delivery services"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "call center") | 
+    startsWith(salaries_df$industry_mod, "contact center") | 
+    startsWith(salaries_df$industry_mod, "customer service") | 
+    startsWith(salaries_df$industry_mod, "delivery & installation for commercial machinery") | 
+    startsWith(salaries_df$industry_mod, "service")
+  )
+] <- "#customer service"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "cultur") | 
+    startsWith(salaries_df$industry_mod, "heritage") | 
+    startsWith(salaries_df$industry_mod, "historic preservation")
+  )
+] <- "#culture"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "academi") |
+    startsWith(salaries_df$industry_mod, "adult education") |
+    startsWith(salaries_df$industry_mod, "career & technical training") | 
+    startsWith(salaries_df$industry_mod, "coaching") | 
+    startsWith(salaries_df$industry_mod, "corporate learning & development") | 
+    startsWith(salaries_df$industry_mod, "corporate training") | 
+    startsWith(salaries_df$industry_mod, "education") | 
+    startsWith(salaries_df$industry_mod, "e learning") | 
+    startsWith(salaries_df$industry_mod, "early childhood education") | 
+    startsWith(salaries_df$industry_mod, "early education") | 
+    startsWith(salaries_df$industry_mod, "esl teacher") | 
+    startsWith(salaries_df$industry_mod, "for profit education") | 
+    startsWith(salaries_df$industry_mod, "graduate assistant") | 
+    startsWith(salaries_df$industry_mod, "instructional") | 
+    startsWith(salaries_df$industry_mod, "large university administration") | 
+    startsWith(salaries_df$industry_mod, "learning & development") | 
+    startsWith(salaries_df$industry_mod, "online education") | 
+    startsWith(salaries_df$industry_mod, "online learning") | 
+    startsWith(salaries_df$industry_mod, "operational training") | 
+    startsWith(salaries_df$industry_mod, "phd") | 
+    startsWith(salaries_df$industry_mod, "pre primary education") | 
+    startsWith(salaries_df$industry_mod, "professional training") | 
+    startsWith(salaries_df$industry_mod, "sailing instructor") | 
+    startsWith(salaries_df$industry_mod, "school district") | 
+    startsWith(salaries_df$industry_mod, "training") | 
+    startsWith(salaries_df$industry_mod, "university administration") | 
+    startsWith(salaries_df$industry_mod, "university research") | 
+    startsWith(salaries_df$industry_mod, "university tech transfer")
+  )
+] <- "#education & training"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "clean energy") | 
+    startsWith(salaries_df$industry_mod, "energy") | 
+    startsWith(salaries_df$industry_mod, "gas") | 
+    startsWith(salaries_df$industry_mod, "oil") | 
+    startsWith(salaries_df$industry_mod, "renewable") | 
+    startsWith(salaries_df$industry_mod, "rural electrification") 
+  )
+] <- "#energy"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "conservation") | 
+    startsWith(salaries_df$industry_mod, "ecology") | 
+    startsWith(salaries_df$industry_mod, "enviro") | 
+    startsWith(salaries_df$industry_mod, "haz / ind / rad waste management") | 
+    startsWith(salaries_df$industry_mod, "natural resources") |
+    startsWith(salaries_df$industry_mod, "pest control") | 
+    startsWith(salaries_df$industry_mod, "waste")
+  )
+] <- "#environment"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "apparel") | 
+    startsWith(salaries_df$industry_mod, "fashion") | 
+    startsWith(salaries_df$industry_mod, "luxury fashion") | 
+    startsWith(salaries_df$industry_mod, "specialist clothing") | 
+    startsWith(salaries_df$industry_mod, "tailoring service")
+  )
+] <- "#fashion & apparel"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "actuarial") | 
+    startsWith(salaries_df$industry_mod, "family office") | 
+    startsWith(salaries_df$industry_mod, "fin") | 
+    startsWith(salaries_df$industry_mod, "fund") | 
+    startsWith(salaries_df$industry_mod, "higher education fundraising") | 
+    startsWith(salaries_df$industry_mod, "i work in the finance function") | 
+    startsWith(salaries_df$industry_mod, "human capital management") | 
+    startsWith(salaries_df$industry_mod, "insurance") | 
+    startsWith(salaries_df$industry_mod, "investing") | 
+    startsWith(salaries_df$industry_mod, "mortgage") | 
+    startsWith(salaries_df$industry_mod, "payment processing") | 
+    startsWith(salaries_df$industry_mod, "pension benefit administration") | 
+    startsWith(salaries_df$industry_mod, "private equity") | 
+    startsWith(salaries_df$industry_mod, "professional association in finance") | 
+    startsWith(salaries_df$industry_mod, "veterinary m&a")
+  )
+] <- "#financial"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "commercial fisherman")
+  )
+] <- "#fishing"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "college athletics") | 
+    startsWith(salaries_df$industry_mod, "gym") | 
+    startsWith(salaries_df$industry_mod, "sport")
+  )
+] <- "#fitness"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "beer sales") | 
+    startsWith(salaries_df$industry_mod, "beverage") | 
+    startsWith(salaries_df$industry_mod, "brewing") | 
+    startsWith(salaries_df$industry_mod, "coffee") | 
+    startsWith(salaries_df$industry_mod, "consumer") | 
+    startsWith(salaries_df$industry_mod, "craft beer") | 
+    startsWith(salaries_df$industry_mod, "food") | 
+    startsWith(salaries_df$industry_mod, "wine")
+  )
+] <- "#food & beverages"
+
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "behavior") | 
+    startsWith(salaries_df$industry_mod, "big pharma") | 
+    startsWith(salaries_df$industry_mod, "cannabis") | 
+    startsWith(salaries_df$industry_mod, "clinic") | 
+    startsWith(salaries_df$industry_mod, "counsel") | 
+    startsWith(salaries_df$industry_mod, "diagnostic medical devices") | 
+    startsWith(salaries_df$industry_mod, "drug development") | 
+    startsWith(salaries_df$industry_mod, "fitness") | 
+    startsWith(salaries_df$industry_mod, "health") | 
+    salaries_df$industry_mod == "hospital" |
+    startsWith(salaries_df$industry_mod, "medcomms") | 
+    startsWith(salaries_df$industry_mod, "medica education") | 
+    startsWith(salaries_df$industry_mod, "medical") | 
+    startsWith(salaries_df$industry_mod, "mental") | 
+    startsWith(salaries_df$industry_mod, "pharma") | 
+    startsWith(salaries_df$industry_mod, "psycholog")
+  )
+] <- "#healthcare"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "corporate travel") | 
+    startsWith(salaries_df$industry_mod, "fast") | 
+    startsWith(salaries_df$industry_mod, "hospitali") | 
+    startsWith(salaries_df$industry_mod, "leisure, sport & tourism") | 
+    startsWith(salaries_df$industry_mod, "park") | 
+    startsWith(salaries_df$industry_mod, "restaurant") | 
+    startsWith(salaries_df$industry_mod, "rideshare")
+  )
+] <- "#hospitality & travel"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "homemaker") | 
+    startsWith(salaries_df$industry_mod, "household services") | 
+    startsWith(salaries_df$industry_mod, "housekeeper")
+  )
+] <- "#household services"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "language") | 
+    startsWith(salaries_df$industry_mod, "interpretation") | 
+    startsWith(salaries_df$industry_mod, "patent translation") | 
+    startsWith(salaries_df$industry_mod, "sign language interpreter") | 
+    startsWith(salaries_df$industry_mod, "translation")
+  )
+] <- "#language"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "compliance") | 
+    startsWith(salaries_df$industry_mod, "cannabis compliance") | 
+    startsWith(salaries_df$industry_mod, "content review") | 
+    startsWith(salaries_df$industry_mod, "legal") | 
+    startsWith(salaries_df$industry_mod, "law")
+  )
+] <- "#legal"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "logistics") | 
+    startsWith(salaries_df$industry_mod, "supply chain") | 
+    startsWith(salaries_df$industry_mod, "transport or logistics")
+  )
+] <- "#logistics"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "archives") | 
+    grepl("librar", salaries_df$industry_mod)
+  )
+] <- "#libraries & archives"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "forklift operator warehouse") | 
+    startsWith(salaries_df$industry_mod, "high end outdoor furniture manufacturer") | 
+    startsWith(salaries_df$industry_mod, "manufacturing") | 
+    startsWith(salaries_df$industry_mod, "security & manufacturing") | 
+    startsWith(salaries_df$industry_mod, "warehous") | 
+    endsWith(salaries_df$industry_mod, "manufacturing")
+  )
+] <- "#manufacturing"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "distribution") | 
+    startsWith(salaries_df$industry_mod, "grocery distribution") | 
+    startsWith(salaries_df$industry_mod, "in house marketing") | 
+    startsWith(salaries_df$industry_mod, "marketing")
+  )
+] <- "#marketing"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "animation") | 
+    startsWith(salaries_df$industry_mod, "book publishing") | 
+    startsWith(salaries_df$industry_mod, "communications") | 
+    startsWith(salaries_df$industry_mod, "editor") | 
+    startsWith(salaries_df$industry_mod, "entertainment") | 
+    startsWith(salaries_df$industry_mod, "film") | 
+    startsWith(salaries_df$industry_mod, "fitness & entertainment") | 
+    startsWith(salaries_df$industry_mod, "freelance journalism") | 
+    startsWith(salaries_df$industry_mod, "gam") | 
+    startsWith(salaries_df$industry_mod, "information") | 
+    startsWith(salaries_df$industry_mod, "internal communications") | 
+    startsWith(salaries_df$industry_mod, "journalism") | 
+    startsWith(salaries_df$industry_mod, "literature") | 
+    startsWith(salaries_df$industry_mod, "media & digital") | 
+    startsWith(salaries_df$industry_mod, "museum") | 
+    startsWith(salaries_df$industry_mod, "summer camp") | 
+    startsWith(salaries_df$industry_mod, "tabletop gam") | 
+    startsWith(salaries_df$industry_mod, "theatre") | 
+    startsWith(salaries_df$industry_mod, "video game") | 
+    startsWith(salaries_df$industry_mod, "writing") | 
+    startsWith(salaries_df$industry_mod, "print") | 
+    startsWith(salaries_df$industry_mod, "publication") | 
+    startsWith(salaries_df$industry_mod, "publish") | 
+    startsWith(salaries_df$industry_mod, "textbook copyeditor")
+  )
+] <- "#media and entertainment"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "mining")
+  )
+] <- "#mining"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "hybrid nonprofit higher education") | 
+    startsWith(salaries_df$industry_mod, "nonprofit") | 
+    startsWith(salaries_df$industry_mod, "non profit") | 
+    startsWith(salaries_df$industry_mod, "not for profit") | 
+    startsWith(salaries_df$industry_mod, "third sector")
+  )
+] <- "#nonprofit"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "lobbying") | 
+    startsWith(salaries_df$industry_mod, "politic")
+  )
+] <- "#politics"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "americorps") | 
+    startsWith(salaries_df$industry_mod, "charity") | 
+    startsWith(salaries_df$industry_mod, "community") | 
+    startsWith(salaries_df$industry_mod, "disability services") | 
+    startsWith(salaries_df$industry_mod, "eap") | 
+    startsWith(salaries_df$industry_mod, "emergency management") | 
+    startsWith(salaries_df$industry_mod, "gov") | 
+    startsWith(salaries_df$industry_mod, "federal") | 
+    startsWith(salaries_df$industry_mod, "immigration") | 
+    startsWith(salaries_df$industry_mod, "individual & family services") | 
+    startsWith(salaries_df$industry_mod, "intergovernmental organization") | 
+    startsWith(salaries_df$industry_mod, "human services") | 
+    startsWith(salaries_df$industry_mod, "international") | 
+    startsWith(salaries_df$industry_mod, "multilateral organisation") | 
+    startsWith(salaries_df$industry_mod, "philanthropy") | 
+    startsWith(salaries_df$industry_mod, "professional regulation") |  # policy officer
+    startsWith(salaries_df$industry_mod, "public ") | 
+    startsWith(salaries_df$industry_mod, "social work") | 
+    startsWith(salaries_df$industry_mod, "state") | 
+    startsWith(salaries_df$industry_mod, "subsidized seniors housing") | 
+    startsWith(salaries_df$industry_mod, "workforce development")
+  )
+] <- "#public sector"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "analytic") | 
+    startsWith(salaries_df$industry_mod, "archaeolog") | 
+    startsWith(salaries_df$industry_mod, "brain research") | 
+    startsWith(salaries_df$industry_mod, "cancer research") | 
+    startsWith(salaries_df$industry_mod, "communication research") | 
+    startsWith(salaries_df$industry_mod, "contract research") | 
+    startsWith(salaries_df$industry_mod, "data ") | 
+    startsWith(salaries_df$industry_mod, "earth science") | 
+    startsWith(salaries_df$industry_mod, "economics") | 
+    startsWith(salaries_df$industry_mod, "geologist") |
+    startsWith(salaries_df$industry_mod, "ipr") |
+    startsWith(salaries_df$industry_mod, "lab science") |
+    startsWith(salaries_df$industry_mod, "life science") |
+    startsWith(salaries_df$industry_mod, "national laboratory") | 
+    startsWith(salaries_df$industry_mod, "physical sciences") | 
+    startsWith(salaries_df$industry_mod, "r&d") | 
+    startsWith(salaries_df$industry_mod, "research") | 
+    startsWith(salaries_df$industry_mod, "real world evidence (data for pharma research)") | 
+    startsWith(salaries_df$industry_mod, "scien") |
+    startsWith(salaries_df$industry_mod, "social science") |
+    startsWith(salaries_df$industry_mod, "survey") | 
+    startsWith(salaries_df$industry_mod, "think tank") | 
+    startsWith(salaries_df$industry_mod, "toxicology") | 
+    startsWith(salaries_df$industry_mod, "wealth advisor research") | 
+    startsWith(salaries_df$industry_mod, "work study") |
+    endsWith(salaries_df$industry_mod, "research")
+  )
+] <- "#r&d"
+
+salaries_df$industry_group[
+  which(
+      startsWith(salaries_df$industry_mod, "affordable housing") | 
+      startsWith(salaries_df$industry_mod, "auction house") | 
+      startsWith(salaries_df$industry_mod, "commercial real estate") | 
+      startsWith(salaries_df$industry_mod, "commodities trading") | 
+      startsWith(salaries_df$industry_mod, "landed estate") | 
+      startsWith(salaries_df$industry_mod, "property management") | 
+      startsWith(salaries_df$industry_mod, "property or construction") | 
+      startsWith(salaries_df$industry_mod, "real estate") | 
+      startsWith(salaries_df$industry_mod, "shared office space") | 
+      startsWith(salaries_df$industry_mod, "title / real estate")
+  )
+] <- "#real estate"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "regulatory affairs")
+  )
+] <- "#regulatory affairs"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "low voltage equipment") | 
+    startsWith(salaries_df$industry_mod, "maintenance") | 
+    startsWith(salaries_df$industry_mod, "outdoor industry / repair & maintenance") | 
+    startsWith(salaries_df$industry_mod, "plumbing") | 
+    startsWith(salaries_df$industry_mod, "protective coatings") | 
+    startsWith(salaries_df$industry_mod, "repair facility for heavy duty trucks") | 
+    startsWith(salaries_df$industry_mod, "restoration")
+  )
+] <- "#repair & maintenance"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "chaplain") | 
+    startsWith(salaries_df$industry_mod, "clergy") | 
+    startsWith(salaries_df$industry_mod, "church") | 
+    startsWith(salaries_df$industry_mod, "faith") | 
+    startsWith(salaries_df$industry_mod, "funeral") | 
+    startsWith(salaries_df$industry_mod, "ministry") | # 2 records (one is gov?)
+    startsWith(salaries_df$industry_mod, "relig")
+  )
+] <- "#religious"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "sales")  # 292 records
+  )
+] <- "#sales"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "background screening") | 
+    startsWith(salaries_df$industry_mod, "intelligence") | 
+    startsWith(salaries_df$industry_mod, "private investigator") | 
+    startsWith(salaries_df$industry_mod, "private sector emergency management") | 
+    startsWith(salaries_df$industry_mod, "security")
+  )
+] <- "#security"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "storage facility")
+  )
+] <- "#storage facility"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "accessibility") |
+    startsWith(salaries_df$industry_mod, "computing") |
+    startsWith(salaries_df$industry_mod, "database") |
+    startsWith(salaries_df$industry_mod, "digital") |
+    startsWith(salaries_df$industry_mod, "e comm") |
+    startsWith(salaries_df$industry_mod, "ecommerce") |
+    startsWith(salaries_df$industry_mod, "ed tech") |
+    startsWith(salaries_df$industry_mod, "edtech") |
+    startsWith(salaries_df$industry_mod, "educ tech") |
+    startsWith(salaries_df$industry_mod, "fire protection") | 
+    startsWith(salaries_df$industry_mod, "forensics") | 
+    startsWith(salaries_df$industry_mod, "geospatial") | 
+    startsWith(salaries_df$industry_mod, "hardware") |
+    startsWith(salaries_df$industry_mod, "information technology") |
+    startsWith(salaries_df$industry_mod, "internet") |
+    startsWith(salaries_df$industry_mod, "it") | 
+    startsWith(salaries_df$industry_mod, "paid student intern in tech") | 
+    startsWith(salaries_df$industry_mod, "saas") |
+    startsWith(salaries_df$industry_mod, "skilled trade") |  # avionics systems technician
+    startsWith(salaries_df$industry_mod, "software") | 
+    startsWith(salaries_df$industry_mod, "space") | 
+    startsWith(salaries_df$industry_mod, "tech") |
+    startsWith(salaries_df$industry_mod, "telecommunications") | 
+    startsWith(salaries_df$industry_mod, "user experience design") | 
+    startsWith(salaries_df$industry_mod, "utilities & telecommunications") |
+    startsWith(salaries_df$industry_mod, "virtual") | 
+    endsWith(salaries_df$industry_mod, "software") 
+  )
+] <- "#tech"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "quality assurance") | 
+    startsWith(salaries_df$industry_mod, "tic")
+  )
+] <- "#testing, inspection and certification"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "tourism") | 
+    startsWith(salaries_df$industry_mod, "travel")
+  )
+] <- "#tourism"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "trade")
+  )
+] <- "#trade"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "labor") | 
+    startsWith(salaries_df$industry_mod, "labour") | 
+    startsWith(salaries_df$industry_mod, "organized labor") | 
+    startsWith(salaries_df$industry_mod, "union")
+  )
+] <- "#unions"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "vet") &
+    !grepl("biotech", salaries_df$industry_mod) &
+    !grepl("m&a", salaries_df$industry_mod)
+  )
+] <- "#veterinary"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "commercial furniture") | 
+    startsWith(salaries_df$industry_mod, "wholesale")
+  )
+] <- "#wholesale"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "laundry & rental")  # 1 record
+  )
+] <- "*other"
+
+salaries_df$industry_group[
+  which(
+    salaries_df$industry_mod == "b2b services" |  # 1 record
+    salaries_df$industry_mod == "diversity, equity & inclusion" |  # 1 record
+    salaries_df$industry_mod == "facilities" |  # 2 records
+    salaries_df$industry_mod == "operations" |  # 1 record
+    salaries_df$industry_mod == "organizational development" |  # 1 record
+    salaries_df$industry_mod == "product management" |  # 2 records
+    salaries_df$industry_mod == "professional association" |  # 2 records
+    startsWith(salaries_df$industry_mod, "professional services") |  # 5 records
+    salaries_df$industry_mod == "program management" |  # 1 record
+    salaries_df$industry_mod == "project management" |  # 1 record
+    startsWith(salaries_df$industry_mod, "wherever i'm assigned via the union")  # 1 record
+  )
+] <- "*unclear"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "buyer") |  # 1 record
+    startsWith(salaries_df$industry_mod, "entrepreneur high net worth") |  # 1 record
+    startsWith(salaries_df$industry_mod, "private company, federal contractor") |  # 1 record
+    startsWith(salaries_df$industry_mod, "small business / service company")  # 1 record
+  )
+] <- "*self employed / entrepreneur"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "i have two jobs")  # 1 record
+  )
+] <- "*multiple jobs"
+
+salaries_df$industry_group[
+  which(
+    startsWith(salaries_df$industry_mod, "graduate student") | 
+    startsWith(salaries_df$industry_mod, "i'm currently a student & don't have a job") | 
+    startsWith(salaries_df$industry_mod, "retired") | 
+    startsWith(salaries_df$industry_mod, "stay at home parent") | 
+    startsWith(salaries_df$industry_mod, "student") | 
+    startsWith(salaries_df$industry_mod, "undergrad student") 
+  )
+] <- "*unemployment"
+
+salaries_df |>
+  select(industry_group) |> 
+  distinct() |>
+  arrange(industry_group)
+```
+
+<br>
+The **industry_group** column still contains some null values, and since there are no clear indicators for classification, we will exclude those records from the analysis. (We could assign them to “**Unclear**,” but keeping them distinct helps preserve analytical transparency.)
+
+```{r}
+#| code-fold: true
+
+salaries_df |> filter(is.na(salaries_df$industry_group))
+```
+
+<br>
+
+### Age
+In this project, we also aim to explore how salary relates to **age**, **work experience (years)**, **experience in the field (years_in_field)**, and **education**. Let’s start by cleaning the **age** data.
+
+The **age** column is already well organized and contains no null records. For sorting purposes, we will create a new column, **age_sort**:
+
+```{r}
+#| code-fold: true
+
+salaries_df <- salaries_df |> 
+  mutate(
+    age_sort = case_when(
+      age == "under 18" ~ "00-17",
+      age == "18-24" ~ "18-24",
+      age == "25-34" ~ "25-34",
+      age == "35-44" ~ "35-44",
+      age == "45-54" ~ "45-54",
+      age == "55-64" ~ "55-64",
+      age == "65 or over" ~ "65-"
+    )
+  )
+
+salaries_df <- salaries_df[, c(
+    "id", "valid", "timestamp", "age", "age_sort", "industry", "industry_mod", "industry_group", "job_title", "job_title_comments", "annual_salary", "annual_salary_usd", "extra_compensation", "extra_compensation_usd", "annual_income_usd", "currency1", "currency2", "currency", "currency_desc", "currency_rate", "income_context", "country", "us_state", "city", "years", "years_in_field", "education", "gender", "race"
+)]
+
+salaries_df |>
+  select(age, age_sort) |> 
+  distinct() |>
+  arrange(age_sort)
+```
+
+No additional cleaning is required for this column.
+
+<br>
+
+### Professional Work Experience
+Both the **years** and **years_in_field** columns contain no null values. However, the category labels show some inconsistencies in formatting:
+
+```{r}
+#| code-fold: true
+
+salaries_df |>
+  select(years) |> 
+  distinct() |>
+  arrange(years)
+
+salaries_df |>
+  select(years_in_field) |> 
+  distinct() |>
+  arrange(years_in_field)
+```
+
+<br>
+We will standardize the format of these columns directly and create new columns for sorting purposes:
+
+```{r}
+#| code-fold: true
+
+salaries_df$years[
+  which(salaries_df$years == "2 - 4 years")
+] <- "2-4 years"
+
+salaries_df$years[
+  which(salaries_df$years == "8 - 10 years")
+] <- "8-10 years"
+
+salaries_df$years[
+  which(salaries_df$years == "11 - 20 years")
+] <- "11-20 years"
+
+salaries_df$years[
+  which(salaries_df$years == "21 - 30 years")
+] <- "21-30 years"
+
+salaries_df$years[
+  which(salaries_df$years == "31 - 40 years")
+] <- "31-40 years"
+
+salaries_df$years_in_field[
+  which(salaries_df$years_in_field == "2 - 4 years")
+] <- "2-4 years"
+
+salaries_df$years_in_field[
+  which(salaries_df$years_in_field == "8 - 10 years")
+] <- "8-10 years"
+
+salaries_df$years_in_field[
+  which(salaries_df$years_in_field == "11 - 20 years")
+] <- "11-20 years"
+
+salaries_df$years_in_field[
+  which(salaries_df$years_in_field == "21 - 30 years")
+] <- "21-30 years"
+
+salaries_df$years_in_field[
+  which(salaries_df$years_in_field == "31 - 40 years")
+] <- "31-40 years"
+
+salaries_df <- salaries_df |> 
+  mutate(
+    years_sort = case_when(
+      years == "1 year or less" ~ "00-01",
+      years == "2-4 years" ~ "02-04",
+      years == "5-7 years" ~ "05-07",
+      years == "8-10 years" ~ "08-10",
+      years == "11-20 years" ~ "11-20",
+      years == "21-30 years" ~ "21-30",
+      years == "31-40 years" ~ "31-40",
+      years == "41 years or more" ~ "41-"
+    ), 
+    years_in_field_sort = case_when(
+      years_in_field == "1 year or less" ~ "00-01",
+      years_in_field == "2-4 years" ~ "02-04",
+      years_in_field == "5-7 years" ~ "05-07",
+      years_in_field == "8-10 years" ~ "08-10",
+      years_in_field == "11-20 years" ~ "11-20",
+      years_in_field == "21-30 years" ~ "21-30",
+      years_in_field == "31-40 years" ~ "31-40",
+      years_in_field == "41 years or more" ~ "41-"
+    )
+  )
+
+salaries_df <- salaries_df[, c(
+    "id", "valid", "timestamp", "age", "age_sort", "industry", "industry_mod", "industry_group", "job_title", "job_title_comments", "annual_salary", "annual_salary_usd", "extra_compensation", "extra_compensation_usd", "annual_income_usd", "currency1", "currency2", "currency", "currency_desc", "currency_rate", "income_context", "country", "us_state", "city", "years", "years_sort", "years_in_field", "years_in_field_sort", "education", "gender", "race"
+)]
+
+salaries_df |>
+  select(years, years_sort) |> 
+  group_by(years) |>
+  slice(1) |>
+  arrange(years_sort)
+
+salaries_df |>
+  select(years_in_field, years_in_field_sort) |> 
+  group_by(years_in_field) |>
+  slice(1) |> 
+  arrange(years_in_field_sort)
+```
+
+<br>
+
+### Education
+The categories in the **education** column are well organized. However, some records contain null values. Since there is no reliable way to infer the missing education levels, we will exclude these records from the analysis:
+
+```{r}
+#| code-fold: true
+#| classes: styled-output
+
+salaries_df <- salaries_df |> 
+  mutate(
+    education_sort = case_when(
+      education == "High School" ~ 1,
+      education == "Some college" ~ 2,
+      education == "College degree" ~ 3,
+      education == "Professional degree (MD, JD, etc.)" ~ 4,
+      education == "Master's degree" ~ 5,
+      education == "PhD" ~ 6,
+      TRUE ~ 7
+    )
+  )
+
+salaries_df <- salaries_df[, c(
+    "id", "valid", "timestamp", "age", "age_sort", "industry", "industry_mod", "industry_group", "job_title", "job_title_comments", "annual_salary", "annual_salary_usd", "extra_compensation", "extra_compensation_usd", "annual_income_usd", "currency1", "currency2", "currency", "currency_desc", "currency_rate", "income_context", "country", "us_state", "city", "years", "years_sort", "years_in_field", "years_in_field_sort", "education", "education_sort", "gender", "race"
+)]
+
+salaries_df |>
+  select(education) |> 
+  distinct() |>
+  arrange(education)
+"
+The number of nulls: {sum(is.na(salaries_df$education))}
+" |> glue() |> print()
+```
+
+
+<br>
+
+## Visualization and Analysis
+### Industry vs Income
+
+As the first task, we aim to examine which **industry groups** tend to have higher income levels. We begin by calculating the average income for each industry group:
+
+```{r}
+#| code-fold: true
+
+salaries_df |> 
+  filter(salaries_df$valid == TRUE) |>
+  select(industry_group, annual_income_usd) |> 
+  group_by(industry_group) |> 
+  summarise(
+    annual_income_usd_mean = mean(annual_income_usd), 
+    annual_salary_usd_count = n()
+  ) |> 
+  arrange(desc(annual_income_usd_mean))
+```
+
+<br>
+Upon inspection, the **accounting** group shows an abnormally high average income. Let’s look into the corresponding records:
+
+```{r}
+#| code-fold: true
+
+options(scipen = 10)
+salaries_df |> 
+  filter(
+    salaries_df$valid == TRUE &
+    salaries_df$industry_group == "#accounting"
+  ) |> 
+  arrange(desc(annual_income_usd)) |> 
+  select(
+    id, valid, annual_salary, annual_income_usd, currency, currency_rate, industry_group
+  )
+```
+
+<br>
+The record with **id = 28056** has an unrealistically large salary value, which clearly appears to be a typo. Considering similar records in the same industry, it is reasonable to assume the intended amount might be around **60,000–70,000 CAD**:
+
+```{r}
+#| code-fold: true
+
+options(scipen = 10)
+salaries_df |> 
+  filter(
+    salaries_df$valid == TRUE &
+    salaries_df$industry_group == "#accounting" & 
+    (
+      salaries_df$annual_income_usd <= 49700 |
+      salaries_df$annual_salary == 6000070000
+    )
+  ) |> 
+  arrange(desc(annual_income_usd)) |> 
+  select(
+    id, valid, annual_salary, annual_income_usd, currency, currency_rate, industry_group, age, job_title, job_title_comments, extra_compensation, extra_compensation_usd, income_context, country, us_state, city, years, years_in_field, education, gender, race
+  )
+```
+
+<br>
+Although we could manually adjust the salary to, for example, **65,000 CAD**, we will instead remove this record to maintain data integrity, as the true value is uncertain and the dataset contains sufficient accounting records:
+
+```{r}
+#| code-fold: true
+
+salaries_df$valid[
+  which(salaries_df$id == 28056)
+] <- FALSE
+
+salaries_df |> 
+  filter(salaries_df$valid == TRUE) |>
+  select(industry_group, annual_income_usd) |> 
+  group_by(industry_group) |> 
+  summarise(
+    annual_income_usd_mean = mean(annual_income_usd), 
+    annual_income_usd_count = n()
+  ) |> 
+  arrange(desc(annual_income_usd_mean))
+```
+
+<br>
+After this adjustment, the average income per industry group appears reasonable. Next, we will visualize the income distributions by industry group:
+
+```{r, fig.height = 11}
+#| code-fold: true
+
+salaries_df <- salaries_df |> 
+  mutate(
+    industry_outlier = case_when(
+      (
+        salaries_df$valid == TRUE & 
+        salaries_df$annual_income_usd > 2000000 &
+        salaries_df$industry_group %in% c("#art", "#sales")
+      ) ~ "level1", 
+      (
+        salaries_df$valid == TRUE & 
+        (
+          salaries_df$industry_group == "#accounting" & 
+          salaries_df$annual_income_usd > 1000000
+        ) | 
+        (
+          salaries_df$industry_group == "#agriculture" & 
+          salaries_df$annual_income_usd > 1000000
+        ) | 
+        (
+          salaries_df$industry_group == "#architecture, engineering, & construction" & 
+          salaries_df$annual_income_usd > 500000
+        ) | 
+        (
+          salaries_df$industry_group == "#consulting" & 
+          salaries_df$annual_income_usd > 1000000
+        ) | 
+        (
+          salaries_df$industry_group == "#energy" & 
+          salaries_df$annual_income_usd > 1000000
+        ) | 
+        (
+          salaries_df$industry_group == "#environment" & 
+          salaries_df$annual_income_usd > 500000
+        ) | 
+        (
+          salaries_df$industry_group == "#financial" & 
+          salaries_df$annual_income_usd > 1000000
+        ) | 
+        (
+          salaries_df$industry_group == "#food & beverages" & 
+          salaries_df$annual_income_usd > 500000
+        ) | 
+        (
+          salaries_df$industry_group == "#healthcare" & 
+          salaries_df$annual_income_usd > 1000000
+        ) | 
+        (
+          salaries_df$industry_group == "#hospitality & travel" & 
+          salaries_df$annual_income_usd > 500000
+        ) | 
+        (
+          salaries_df$industry_group == "#legal" & 
+          salaries_df$annual_income_usd > 750000
+        ) | 
+        (
+          salaries_df$industry_group == "#public sector" & 
+          salaries_df$annual_income_usd > 500000
+        ) | 
+        (
+          salaries_df$industry_group == "#r&d" & 
+          salaries_df$annual_income_usd > 1000000
+        ) | 
+        (
+          salaries_df$industry_group == "#tech" & 
+          salaries_df$annual_income_usd > 1500000
+        )
+      ) ~ "level2", 
+      TRUE ~ "-"
+    )
+  )
+
+salaries_df <- salaries_df[, c(
+    "id", "valid", "industry_outlier", "timestamp", "age", "age_sort", "industry", "industry_mod", "industry_group", "job_title", "job_title_comments", "annual_salary", "annual_salary_usd", "extra_compensation", "extra_compensation_usd", "annual_income_usd", "currency1", "currency2", "currency", "currency_desc", "currency_rate", "income_context", "country", "us_state", "city", "years", "years_sort", "years_in_field", "years_in_field_sort", "education", "education_sort", "gender", "race"
+)]
+
+salaries_df |> 
+  filter(
+    valid == TRUE &
+    industry_outlier == "-"
+  ) |> 
+  arrange(desc(industry_group)) |>
+  ggplot(aes(x = fct_inorder(industry_group), y = annual_income_usd)) +
+  geom_boxplot() + 
+  geom_point(
+    data = salaries_df |> filter(industry_outlier == "level2"), 
+    color = "blue", size = 2
+  ) + 
+  geom_point(
+    data = salaries_df |> filter(industry_outlier == "level1"), 
+    color = "red", size = 2
+  ) + 
+  geom_point(
+    data = salaries_df |> filter(industry_outlier == "level1"),
+    color = "red", size = 4, shape = "circle open"
+  ) + 
+  scale_y_continuous(
+    limits = c(0, 5200000), 
+    breaks = c(
+      0, 500000, 1000000, 1500000, 2000000, 2500000, 
+      3000000, 3500000, 4000000, 4500000, 5000000
+    ),
+    labels = c(
+      "0", "500k", "1M", "1.5M", "2M", "2.5M", 
+      "3M", "3.5M", "4M", "4.5M", "5M"
+    )
+  ) +
+  labs(
+    title = "Annual Income Distribution by Industry", 
+    x = "Industry", 
+    y = "Annual Income (USD)"
+  ) +
+  coord_flip()
+```
+
+<br>
+From the distribution plot, several records stand out with unusually high income values.
+
+* Red points represent extreme outliers that are significantly higher than the rest within the same industry - we will refer to these as **Level 1 outliers**.
+* Blue points represent moderately high outliers that are still noticeably higher than other records in their group — we will call these **Level 2 outliers**.
+
+Upon reviewing the Level 1 and Level 2 outliers, most belong to individuals holding top executive positions (e.g., CEOs) or earning substantial amounts from stock options:
+
+```{r}
+#| code-fold: true
+
+salaries_df |> 
+  filter(industry_outlier %in% c("level1", "level2")) |>
+  select(
+    id, age, industry_group, annual_income_usd, currency, annual_salary, annual_salary_usd, extra_compensation, extra_compensation_usd, job_title, job_title_comments, income_context, country, us_state, city, years, years_in_field, education, gender, race
+    ) |> 
+  arrange(industry_group, desc(annual_income_usd))
+```
+
+<br>
+A key question arises: **should we exclude only Level 1 outliers, or both Level 1 and Level 2?**
+By comparing the top six industries ranked by median and mean income under both exclusion conditions, we find that removing Level 2 outliers has little effect on the median, but it does alter the mean rankings. Notably, a single Level 2 record in the **energy** industry raises its mean rank from **6th to 3rd**, a significant distortion.
+
+Since most Level 1 and Level 2 outliers represent unusual financial situations, we will proceed with the **Level 1 & Level 2–excluded** results:
+
+```{r}
+#| code-fold: true
+#| classes: styled-output
+
+industry_salary_l1_df <- salaries_df |> 
+  filter(
+    valid == TRUE & 
+    !is.na(industry_group) & 
+    !industry_group %in% c("*multiple jobs", "*unemployment") & 
+    !industry_outlier %in% c("level1")
+  ) |>
+  group_by(industry_group) |> 
+  summarise(
+    annual_income_usd_median = median(annual_income_usd), 
+    annual_income_usd_mean = mean(annual_income_usd), 
+    annual_income_usd_count = n()
+  ) |> 
+  arrange(desc(annual_income_usd_mean))
+
+industry_salary_l1_df$rank_median <- rank(
+  -industry_salary_l1_df$annual_income_usd_median, ties.method = "min"
+)
+industry_salary_l1_df$rank_mean <- rank(
+  -industry_salary_l1_df$annual_income_usd_mean, ties.method = "min"
+)
+industry_salary_l1_df <- industry_salary_l1_df[, c(
+    "industry_group", "rank_median", "annual_income_usd_median", "rank_mean", "annual_income_usd_mean", "annual_income_usd_count"
+)]
+
+industry_salary_l2_df <- salaries_df |> 
+  filter(
+    valid == TRUE & 
+    !is.na(industry_group) & 
+    !industry_group %in% c("*multiple jobs", "*unemployment") & 
+    !industry_outlier %in% c("level1", "level2")
+  ) |>
+  group_by(industry_group) |> 
+  summarise(
+    annual_income_usd_median = median(annual_income_usd), 
+    annual_income_usd_mean = mean(annual_income_usd), 
+    annual_income_usd_count = n()
+  ) |> 
+  arrange(desc(annual_income_usd_mean))
+
+industry_salary_l2_df$rank_median <- rank(
+  -industry_salary_l2_df$annual_income_usd_median, ties.method = "min"
+)
+industry_salary_l2_df$rank_mean <- rank(
+  -industry_salary_l2_df$annual_income_usd_mean, ties.method = "min"
+)
+industry_salary_l2_df <- industry_salary_l2_df[, c(
+    "industry_group", "rank_median", "annual_income_usd_median", "rank_mean", "annual_income_usd_mean", "annual_income_usd_count"
+)]
+
+"
+Top 6 industries (level1-excluded, median):
+{
+  industry_salary_l1_df |> filter(rank_median < 7) |> arrange(rank_median) |>
+  select(industry_group) |> list()
+}\n
+Top 6 industries (level1&2-excluded, median):
+{
+  industry_salary_l2_df |> filter(rank_median < 7) |> arrange(rank_median) |>
+  select(industry_group) |> list()
+}\n
+Top 6 industries (level1-excluded, mean):
+{
+  industry_salary_l1_df |> filter(rank_mean < 7) |> arrange(rank_mean) |>
+  select(industry_group) |> list()
+}\n
+Top 6 industries (level1&2-excluded, mean):
+{
+  industry_salary_l2_df |> filter(rank_mean < 7) |> arrange(rank_mean) |>
+  select(industry_group) |> list()
+}\n
+" |> glue() |> print()
+```
+
+```{r, fig.height = 9}
+#| code-fold: true
+
+# Plot from here!
+plot_industry_income_median_l2 <- industry_salary_l2_df |> arrange(rank_median) |>
+  ggplot(
+    mapping = aes(x = fct_inorder(industry_group),  y = annual_income_usd_median)
+  ) + 
+  geom_point() +
+  geom_text(
+    data = industry_salary_l2_df |> filter(
+      industry_salary_l2_df$rank_median %in% c(1, 2, 4, 6)
+    ), 
+    aes(x = industry_group, y = annual_income_usd_median, label = industry_group),
+    size = 2, vjust = 0.3, hjust = -0.2
+  ) + 
+  geom_text(
+    data = industry_salary_l2_df |> 
+      filter(industry_salary_l2_df$rank_median %in% c(3, 5)), 
+    aes(x = industry_group, y = annual_income_usd_median, label = industry_group),
+    size = 2, vjust = 1.4, hjust = 0.9
+  ) + 
+  scale_x_discrete(labels = NULL) +
+  scale_y_continuous(
+    limits = c(20000, 120000), 
+    breaks = c(0, 25000, 50000, 75000, 100000, 125000),
+    labels = c("0", "25k", "50k", "75k", "100k", "125k")
+  ) +
+  labs(
+    x = "Industry", y = "Annual Income (USD) - Median"
+  ) +
+  theme(
+    axis.ticks.x = element_blank(),
+    axis.ticks.y = element_blank(),
+    panel.border = element_blank(),
+    panel.grid.major.x = element_blank(),  
+    panel.grid.minor.x = element_blank(),
+    plot.title = element_text(hjust = 0.5), 
+    text = element_text(size = 10)
+  )
+
+plot_industry_income_mean_l2 <- industry_salary_l2_df |> 
+  arrange(desc(annual_income_usd_mean)) |> 
+  ggplot(
+    mapping = aes(x = fct_inorder(industry_group),  y = annual_income_usd_mean)
+  ) + 
+  geom_point() +
+  geom_text(
+    data = industry_salary_l2_df |> filter(
+      industry_salary_l2_df$rank_mean %in% c(1, 2, 3, 6)
+    ), 
+    aes(x = industry_group, y = annual_income_usd_mean, label = industry_group),
+    size = 2, vjust = 0.3, hjust = -0.2
+  ) + 
+  geom_text(
+    data = industry_salary_l2_df |> filter(industry_salary_l2_df$rank_mean %in% c(4)), 
+    aes(x = industry_group, y = annual_income_usd_mean, label = industry_group),
+    size = 2, vjust = 0.5, hjust = 1.2
+  ) + 
+  geom_text(
+    data = industry_salary_l2_df |> filter(industry_salary_l2_df$rank_mean %in% c(5)), 
+    aes(x = industry_group, y = annual_income_usd_mean, label = industry_group),
+    size = 2, vjust = 1.5, hjust = 0.5
+  ) + 
+  scale_x_discrete(labels = NULL) +
+  scale_y_continuous(
+    limits = c(20000, 170000), 
+    breaks = c(0, 25000, 50000, 75000, 100000, 125000, 150000, 175000),
+    labels = c("0", "25k", "50k", "75k", "100k", "125k", "150k", "175k")
+  ) +
+  labs(x = "Industry", y = "Annual Income (USD)  - Mean") +
+  theme(
+    axis.ticks.x = element_blank(),
+    axis.ticks.y = element_blank(),
+    panel.border = element_blank(),
+    panel.grid.major.x = element_blank(),  
+    panel.grid.minor.x = element_blank(),
+    text = element_text(size = 10)
+  )
+
+grid.arrange(
+  plot_industry_income_median_l2, 
+  plot_industry_income_mean_l2, 
+  ncol = 1, 
+  top = textGrob(
+    "High Income Industry ranking",
+    gp = gpar(fontsize = 16, fontface = "bold")
+  )
+)
+```
+
+<br>
+Examining the top six industries by both median and mean income (after exclusion), **tech**, **biology**, and **energy** consistently rank near the top and also have sufficiently large sample sizes to draw meaningful conclusions. In contrast, other industries, such as **storage facility**, **chemical**, **tourism**, **fitness**, **legal**, and **trade**, appear in the top ranks but have very small sample sizes. This suggests that either the observed high incomes are not representative of the overall industry, or the industry categorization could be further refined for improved accuracy.
+
+<br>
+
+### Age / Work Experience / Education vs Income
+
+In this section, we examine how **age**, **professional work experience**, and **education** influence income levels. We begin by observing the median and mean income across each category:
+
+```{r}
+#| warning: false
+#| code-fold: true
+
+age_salary_df <- salaries_df |> 
+  filter(salaries_df$valid == TRUE) |>
+  select(age, age_sort, annual_income_usd) |> 
+  group_by(age, age_sort) |> 
+  summarise(
+    annual_income_usd_median = median(annual_income_usd), 
+    annual_income_usd_mean = mean(annual_income_usd), 
+    annual_income_usd_count = n()
+  ) |> 
+  arrange(age_sort)
+
+age_salary_df <- age_salary_df[, c(
+  "age", "annual_income_usd_count", "annual_income_usd_median", "annual_income_usd_mean"
+)]
+
+age_salary_df
+```
+
+```{r}
+#| warning: false
+#| code-fold: true
+
+education_salary_df <- salaries_df |> 
+  filter(salaries_df$valid == TRUE) |>
+  select(education, education_sort, annual_income_usd) |> 
+  group_by(education, education_sort) |> 
+  summarise(
+    annual_income_usd_median = median(annual_income_usd), 
+    annual_income_usd_mean = mean(annual_income_usd), 
+    annual_income_usd_count = n()
+  ) |> 
+  arrange(education_sort)
+
+education_salary_df <- education_salary_df[, c(
+  "education", "annual_income_usd_count", "annual_income_usd_median", "annual_income_usd_mean"
+)]
+
+education_salary_df
+```
+
+```{r}
+#| warning: false
+#| code-fold: true
+
+years_salary_df <- salaries_df |> 
+  filter(salaries_df$valid == TRUE) |>
+  select(years, years_sort, annual_income_usd) |> 
+  group_by(years, years_sort) |> 
+  summarise(
+    annual_income_usd_median = median(annual_income_usd), 
+    annual_income_usd_mean = mean(annual_income_usd), 
+    annual_income_usd_count = n()
+  ) |> 
+  arrange(years_sort)
+
+years_salary_df <- years_salary_df[, c(
+  "years", "annual_income_usd_count", "annual_income_usd_median", "annual_income_usd_mean"
+)]
+
+years_salary_df
+```
+
+```{r}
+#| warning: false
+#| code-fold: true
+
+fieldyears_salary_df <- salaries_df |> 
+  filter(salaries_df$valid == TRUE) |>
+  select(years_in_field, years_in_field_sort, annual_income_usd) |> 
+  group_by(years_in_field, years_in_field_sort) |> 
+  summarise(
+    annual_income_usd_median = median(annual_income_usd), 
+    annual_income_usd_mean = mean(annual_income_usd), 
+    annual_income_usd_count = n()
+  ) |> 
+  arrange(years_in_field_sort)
+
+fieldyears_salary_df <- fieldyears_salary_df[, c(
+  "years_in_field", "annual_income_usd_count", "annual_income_usd_median", "annual_income_usd_mean"
+)]
+
+fieldyears_salary_df
+```
+
+<br>
+Overall, the results appear reasonable, except for the **High School** education category, which shows an unusually high mean income. Upon inspection, there is one record with an annual income exceeding **500,000 USD** whose highest education level is high school. Although this data point may be valid, it lies far beyond the general income range for this education level. Therefore, we will exclude this record from further analysis.
+
+Next, we visualize the **median** and **mean** values using **boxplots** for each category:
+
+```{r, fig.width = 15, fig.height = 10}
+#| warning: false
+#| code-fold: true
+
+# Remove the outlier
+age_salary_mod_df <- salaries_df |> 
+  filter(
+    salaries_df$valid == TRUE & 
+    case_when(
+        age == "under 18" ~ annual_income_usd < 500000,
+        TRUE ~ TRUE
+    ) 
+  ) |>
+  select(age, age_sort, annual_income_usd) |> 
+  group_by(age, age_sort) |> 
+  summarise(
+    annual_income_usd_median = median(annual_income_usd), 
+    annual_income_usd_mean = mean(annual_income_usd), 
+    annual_income_usd_count = n()
+  ) |> 
+  arrange(age_sort)
+
+age_salary_mod_df <- age_salary_mod_df[, c(
+  "age", "annual_income_usd_mean", "annual_income_usd_count", "annual_income_usd_median"
+)]
+
+plot_age_income <- salaries_df |> 
+  filter(
+    valid == TRUE &
+    industry_outlier == "-" & 
+    case_when(
+      age == "under 18" ~ annual_income_usd < 500000,
+      TRUE ~ TRUE
+    ) 
+  ) |> 
+  arrange(desc(age_sort)) |>
+  ggplot(aes(x = fct_inorder(age), y = annual_income_usd)) +
+  geom_boxplot() + 
+  geom_point(
+    data = age_salary_mod_df |> mutate(annual_income_usd = annual_income_usd_mean), 
+    color = "red", size = 2
+  ) + 
+  scale_x_discrete(
+    breaks = c("under 18", "18-24", "25-34", "35-44", "45-54", "55-64", "65 or over"),
+    labels = c("<18", "18-24", "25-34", "35-44", "45-54", "55-64", "65=<")
+  ) +
+  scale_y_continuous(
+    limits = c(0, 1500000), 
+    breaks = c(0, 500000, 1000000, 1500000),
+    labels = c("0", "500k", "1000k", "1500k")
+  ) +
+  labs(
+    x = "Age", 
+    y = "Annual Income (USD)"
+  ) +
+  coord_flip()
+
+plot_education_income <- salaries_df |> 
+  filter(
+    valid == TRUE &
+    industry_outlier == "-" &
+    !is.na(education)
+  ) |> 
+  arrange(desc(education_sort)) |>
+  ggplot(aes(x = fct_inorder(education), y = annual_income_usd)) +
+  geom_boxplot() + 
+  geom_point(
+    data = education_salary_df |> 
+      mutate(annual_income_usd = annual_income_usd_mean) |>
+      filter(!is.na(education)), 
+    color = "red", size = 2
+  ) + 
+  scale_x_discrete(
+    breaks = c(
+      "High School", "Some college", "College degree", "Professional degree (MD, JD, etc.)", "Master's degree", "PhD"
+    ),
+    labels = c("high school", "some college", "college", "professional", "master", "phd")
+  ) +
+  scale_y_continuous(
+    limits = c(0, 1500000), 
+    breaks = c(0, 500000, 1000000, 1500000),
+    labels = c("0", "500k", "1000k", "1500k")
+  ) +
+  labs(
+    x = "Highest Education Level", 
+    y = "Annual Income (USD)"
+  ) +
+  coord_flip()
+
+plot_years_income <- salaries_df |> 
+  filter(
+    valid == TRUE &
+    industry_outlier == "-"
+  ) |> 
+  arrange(desc(years_sort)) |>
+  ggplot(aes(x = fct_inorder(years), y = annual_income_usd)) +
+  geom_boxplot() + 
+  geom_point(
+    data = years_salary_df |> mutate(annual_income_usd = annual_income_usd_mean), 
+    color = "red", size = 2
+  ) + 
+  scale_x_discrete(
+    breaks = c("1 year or less", "2-4 years", "5-7 years", "8-10 years", "11-20 years", "21-30 years", "31-40 years", "41 years or more"),
+    labels = c("<1", "2-4", "5-7", "8-10", "11-20", "21-30", "31-40", "41<")
+  ) +
+  scale_y_continuous(
+    limits = c(0, 1500000), 
+    breaks = c(0, 500000, 1000000, 1500000),
+    labels = c("0", "500k", "1000k", "1500k")
+  ) +
+  labs(
+    x = "Professional Work Experience (years)", 
+    y = "Annual Income (USD)"
+  ) +
+  coord_flip()
+
+plot_fieldyears_income <- salaries_df |> 
+  filter(
+    valid == TRUE &
+    industry_outlier == "-"
+  ) |> 
+  arrange(desc(years_in_field_sort)) |>
+  ggplot(aes(x = fct_inorder(years_in_field), y = annual_income_usd)) +
+  geom_boxplot() + 
+  geom_point(
+    data = fieldyears_salary_df |> mutate(annual_income_usd = annual_income_usd_mean), 
+    color = "red", size = 2
+  ) + 
+  scale_x_discrete(
+    breaks = c("1 year or less", "2-4 years", "5-7 years", "8-10 years", "11-20 years", "21-30 years", "31-40 years", "41 years or more"),
+    labels = c("<1", "2-4", "5-7", "8-10", "11-20", "21-30", "31-40", "41<")
+  ) +
+  scale_y_continuous(
+    limits = c(0, 1500000), 
+    breaks = c(0, 500000, 1000000, 1500000),
+    labels = c("0", "500k", "1000k", "1500k")
+  ) +
+  labs(
+    x = "Professional Work Experience in Field (years)", 
+    y = "Annual Income (USD)"
+  ) +
+  coord_flip()
+
+
+grid.arrange(
+  plot_age_income, 
+  plot_education_income, 
+  plot_years_income, 
+  plot_fieldyears_income, 
+  ncol = 2, 
+  top = textGrob(
+      "Annual Income Distributions by Age / Education / Work Experience\n",
+      gp = gpar(fontsize = 22, fontface = "bold")
+    )
+)
+
+```
+
+<br>
+In the plots, red points represent the mean values.
+
+* **Age**: Both the median and mean incomes increase with age, peaking in the **45–54** age group before slightly declining.
+* **Education**: Generally, higher educational attainment correlates with higher income. Notably, individuals with **professional degrees** tend to earn more than those with other advanced degrees.
+* **Work Experience**: Regardless of field-specific experience, individuals with **21–30 years** of professional experience exhibit the highest income levels.
+
+<br>
+There appears to be some correlation among these factors. Let’s examine the pairwise relationships:
+
+```{r}
+#| code-fold: true
+
+salaries_df <- salaries_df |> 
+  mutate(
+    age_num = case_when(
+      age == "under 18" ~ (0 + 18) / 2,
+      age == "18-24" ~ (18 + 24) / 2,
+      age == "25-34" ~ (25 + 34) / 2,
+      age == "35-44" ~ (35 + 44) / 2,
+      age == "45-54" ~ (45 + 54) / 2,
+      age == "55-64" ~ (55 + 64) / 2,
+      age == "65 or over" ~ (65 + 85) / 2
+    ), 
+    years_num = case_when(
+      years == "1 year or less" ~ (0 + 1) / 2,
+      years == "2-4 years" ~ (2 + 4) / 2,
+      years == "5-7 years" ~ (5 + 7) / 2,
+      years == "8-10 years" ~ (8 + 10) / 2,
+      years == "11-20 years" ~ (11 + 20) / 2,
+      years == "21-30 years" ~ (21 + 30) / 2,
+      years == "31-40 years" ~ (31 + 40) / 2,
+      years == "41 years or more" ~ (41 + 60) / 2
+    ), 
+    years_in_field_num = case_when(
+      years_in_field == "1 year or less" ~ (0 + 1) / 2,
+      years_in_field == "2-4 years" ~ (2 + 4) / 2,
+      years_in_field == "5-7 years" ~ (5 + 7) / 2,
+      years_in_field == "8-10 years" ~ (8 + 10) / 2,
+      years_in_field == "11-20 years" ~ (11 + 20) / 2,
+      years_in_field == "21-30 years" ~ (21 + 30) / 2,
+      years_in_field == "31-40 years" ~ (31 + 40) / 2,
+      years_in_field == "41 years or more" ~ (41 + 60) / 2
+    )
+  )
+
+
+cor_matrix <- salaries_df |> 
+  select(age_num, years_num, years_in_field_num, education_sort) |> 
+  cor()
+cor_matrix |> corrplot(
+  type="lower", 
+  addCoef.col="black", 
+  title = "Correlation Matrix among Age, Work Experience and Education", 
+  mar = c(0, 0, 4, 0)
+)
+```
+
+<br>
+As expected, there are strong positive correlations between **age** and **work experience**, and between the **two types of work experience** themselves. In contrast, correlations between **education** and either **age** or **work experience** are close to zero, suggesting that educational level is relatively independent of these two factors in this dataset.
+
+<br>
+
+Referring back to the earlier **Industry vs. Income** analysis, the **tech** industry was identified as one of the highest-paying sectors. To investigate whether this is due to differences in **age**, **work experience**, or **education**, we compare the **tech** industry with **education & training**, a lower-paying industry based on median and mean income.
+
+The proportions of **age**, **work experience**, and **education** categories in both industries are displayed below:
+
+```{r, fig.width = 15, fig.height = 12}
+#| warning: false
+#| code-fold: true
+
+# tech x age
+tech_age_df <- salaries_df |> filter(
+  salaries_df$valid == TRUE & 
+  industry_group == "#tech"
+) |>
+  group_by(industry_group, age, age_sort) |> 
+  summarise(count = n() / nrow(filter(salaries_df, industry_group == "#tech"))) |> 
+  ungroup() |>
+  arrange(age_sort)
+
+plot_tech_age <- tech_age_df |> 
+  ggplot(aes(x = industry_group, y = count, fill = fct_inorder(age))) +
+  geom_bar(stat = "identity") +
+  geom_text(
+    aes(label = age), 
+    position = position_stack(vjust = 0.5)
+  ) +
+  scale_x_discrete(name = "age", label = NULL) +
+  scale_y_continuous(name = "Percentage", label = label_percent()) +
+  scale_fill_discrete(
+    labels = c("<18", "18-24", "25-34", "35-44", "45-54", "55-64", "65=<")
+  ) + 
+  theme(
+    text = element_text(size = 18, face = "bold"), 
+    legend.position = "none"
+  )
+
+# tech x education
+tech_education_df <- salaries_df |> filter(
+  salaries_df$valid == TRUE & 
+  industry_group == "#tech"
+) |>
+  group_by(industry_group, education, education_sort) |> 
+  summarise(count = n() / nrow(filter(salaries_df, industry_group == "#tech"))) |> 
+  ungroup() |>
+  arrange(education_sort)
+
+plot_tech_education <- tech_education_df |>
+  ggplot(aes(x = industry_group, y = count, fill = fct_inorder(education))) +
+  geom_bar(stat = "identity") +
+  geom_text(
+    aes(label = education), 
+    position = position_stack(vjust = 0.5)
+  ) +
+  scale_x_discrete(name = "education", label = NULL) +
+  scale_y_continuous(name = NULL, label = NULL) +
+  scale_fill_discrete(
+    labels = c("high school", "some college", "college", "professional", "master", "phd")
+  ) + 
+  theme(
+    text = element_text(size = 18, face = "bold"), 
+    legend.position = "none"
+  )
+
+# tech x years
+tech_years_df <- salaries_df |> filter(
+  salaries_df$valid == TRUE & 
+  industry_group == "#tech"
+) |>
+  group_by(industry_group, years, years_sort) |> 
+  summarise(count = n() / nrow(filter(salaries_df, industry_group == "#tech"))) |> 
+  ungroup() |>
+  arrange(years_sort)
+
+plot_tech_years <- tech_years_df |> 
+  ggplot(aes(x = industry_group, y = count, fill = fct_inorder(years))) +
+  geom_bar(stat = "identity") +
+  geom_text(
+    aes(label = years), 
+    position = position_stack(vjust = 0.5)
+  ) +
+  scale_x_discrete(name = "overall work experience", label = NULL) +
+  scale_y_continuous(name = NULL, label = NULL) +
+  scale_fill_discrete(
+    labels = c("<1", "2-4", "5-7", "8-10", "11-20", "21-30", "31-40", "41<")
+  ) + 
+  theme(
+    text = element_text(size = 18, face = "bold"), 
+    legend.position = "none"
+  )
+
+# tech x years_in_field
+tech_fieldyears_df <- salaries_df |> filter(
+  salaries_df$valid == TRUE & 
+  industry_group == "#tech"
+) |>
+  group_by(industry_group, years_in_field, years_in_field_sort) |> 
+  summarise(count = n() / nrow(filter(salaries_df, industry_group == "#tech"))) |> 
+  ungroup() |>
+  arrange(years_in_field_sort)
+
+plot_tech_fieldyears <- tech_fieldyears_df |> 
+  ggplot(aes(x = industry_group, y = count, fill = fct_inorder(years_in_field))) +
+  geom_bar(stat = "identity") +
+  geom_text(
+    aes(label = years_in_field), 
+    position = position_stack(vjust = 0.5)
+  ) +
+  scale_x_discrete(name = "work experience in field", label = NULL) +
+  scale_y_continuous(name = NULL, label = NULL) +
+  scale_fill_discrete(
+    labels = c("<1", "2-4", "5-7", "8-10", "11-20", "21-30", "31-40", "41<")
+  ) + 
+  theme(
+    text = element_text(size = 18, face = "bold"), 
+    legend.position = "none"
+  )
+
+# Arrange plots
+grid.arrange(
+  plot_tech_age, 
+  plot_tech_education, 
+  plot_tech_years, 
+  plot_tech_fieldyears, 
+  ncol = 4, 
+  top = textGrob(
+    "Proportions of Age / Education / Work Experience in Tech\n",
+    gp = gpar(fontsize = 22, fontface = "bold")
+  )
+)
+```
+```{r, fig.width = 15, fig.height = 12}
+#| warning: false
+#| code-fold: true
+
+# education & training x age
+eduandtra_age_df <- salaries_df |> filter(
+  salaries_df$valid == TRUE & 
+  industry_group == "#education & training"
+) |>
+  group_by(industry_group, age, age_sort) |> 
+  summarise(count = n() / nrow(filter(salaries_df, industry_group == "#education & training"))) |> 
+  ungroup() |>
+  arrange(age_sort)
+
+plot_eduandtra_age <- eduandtra_age_df |> 
+  ggplot(aes(x = industry_group, y = count, fill = fct_inorder(age))) +
+  geom_bar(stat = "identity") +
+  geom_text(
+    aes(label = age), 
+    position = position_stack(vjust = 0.5)
+  ) +
+  scale_x_discrete(name = "age", label = NULL) +
+  scale_y_continuous(name = "Percentage", label = label_percent()) +
+  scale_fill_discrete(
+    labels = c("<18", "18-24", "25-34", "35-44", "45-54", "55-64", "65=<")
+  ) + 
+  theme(
+    text = element_text(size = 18, face = "bold"), 
+    legend.position = "none"
+  )
+
+# education & training x education
+eduandtra_education_df <- salaries_df |> filter(
+  salaries_df$valid == TRUE & 
+  industry_group == "#education & training"
+) |>
+  group_by(industry_group, education, education_sort) |> 
+  summarise(count = n() / nrow(filter(salaries_df, industry_group == "#education & training"))) |> 
+  ungroup() |>
+  arrange(education_sort)
+
+plot_eduandtra_education <- eduandtra_education_df |>
+  ggplot(aes(x = industry_group, y = count, fill = fct_inorder(education))) +
+  geom_bar(stat = "identity") +
+  geom_text(
+    aes(label = education), 
+    position = position_stack(vjust = 0.5)
+  ) +
+  scale_x_discrete(name = "education", label = NULL) +
+  scale_y_continuous(name = NULL, label = NULL) +
+  scale_fill_discrete(
+    labels = c("high school", "some college", "college", "professional", "master", "phd")
+  ) + 
+  theme(
+    text = element_text(size = 18, face = "bold"), 
+    legend.position = "none"
+  )
+
+# education & training x years
+eduandtra_years_df <- salaries_df |> filter(
+  salaries_df$valid == TRUE & 
+  industry_group == "#education & training"
+) |>
+  group_by(industry_group, years, years_sort) |> 
+  summarise(count = n() / nrow(filter(salaries_df, industry_group == "#education & training"))) |> 
+  ungroup() |>
+  arrange(years_sort)
+
+plot_eduandtra_years <- eduandtra_years_df |> 
+  ggplot(aes(x = industry_group, y = count, fill = fct_inorder(years))) +
+  geom_bar(stat = "identity") +
+  geom_text(
+    aes(label = years), 
+    position = position_stack(vjust = 0.5)
+  ) +
+  scale_x_discrete(name = "overall work experience", label = NULL) +
+  scale_y_continuous(name = NULL, label = NULL) +
+  scale_fill_discrete(
+    labels = c("<1", "2-4", "5-7", "8-10", "11-20", "21-30", "31-40", "41<")
+  ) + 
+  theme(
+    text = element_text(size = 18, face = "bold"), 
+    legend.position = "none"
+  )
+
+# education & training x years_in_field
+eduandtra_fieldyears_df <- salaries_df |> filter(
+  salaries_df$valid == TRUE & 
+  industry_group == "#education & training"
+) |>
+  group_by(industry_group, years_in_field, years_in_field_sort) |> 
+  summarise(count = n() / nrow(filter(salaries_df, industry_group == "#education & training"))) |> 
+  ungroup() |>
+  arrange(years_in_field_sort)
+
+plot_eduandtra_fieldyears <- eduandtra_fieldyears_df |> 
+  ggplot(aes(x = industry_group, y = count, fill = fct_inorder(years_in_field))) +
+  geom_bar(stat = "identity") +
+  geom_text(
+    aes(label = years_in_field), 
+    position = position_stack(vjust = 0.5)
+  ) +
+  scale_x_discrete(name = "work experience in field", label = NULL) +
+  scale_y_continuous(name = NULL, label = NULL) +
+  scale_fill_discrete(
+    labels = c("<1", "2-4", "5-7", "8-10", "11-20", "21-30", "31-40", "41<")
+  ) + 
+  theme(
+    text = element_text(size = 18, face = "bold"), 
+    legend.position = "none"
+  )
+
+# Arrange plots
+grid.arrange(
+  plot_eduandtra_age, 
+  plot_eduandtra_education, 
+  plot_eduandtra_years, 
+  plot_eduandtra_fieldyears, 
+  ncol = 4, 
+  top = textGrob(
+    "Proportions of Age / Education / Work Experience in Education & Training\n",
+    gp = gpar(fontsize = 22, fontface = "bold")
+  )
+)
+```
+
+
+<br>
+As shown, the distributions for **age** and **work experience** are quite similar between the two groups. The primary difference lies in education level, Tech professionals are more likely to hold college degrees, whereas Education & Training professionals are more likely to have Master’s degrees.
+Interestingly, individuals with Master’s degrees generally earn more than those with college degrees, based on the earlier analysis. Therefore, the income gap between these industries cannot be explained solely by differences in **age**, **experience**, or **education** level. This suggests that industry-specific factors, such as job market demand or business profitability, play a more significant role in income variation.
+
+
+## Conclusion
+Through this analysis, we explored how **industry**, **age**, **work experience**, and **education** relate to income.
+
+* We identified reasonable patterns, such as higher income with greater experience or higher degrees.
+* However, the high-paying industries (e.g., **tech**) do not necessarily employ older, more experienced, or more highly educated individuals.
+
+This indicates that industry characteristics, rather than demographic or educational factors, are likely the main drivers of income differences across professions.
